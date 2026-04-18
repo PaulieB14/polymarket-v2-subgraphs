@@ -20,14 +20,18 @@ type OrderFilledEvent @entity(immutable: true) {
   orderHash: Bytes!
   maker: Account!
   taker: Account!
-  makerAssetId: BigInt!
-  takerAssetId: BigInt!
+  side: Int!                            # 0 BUY, 1 SELL (from Side enum)
+  market: Market!
+  tokenId: BigInt!
   makerAmountFilled: BigInt!
   takerAmountFilled: BigInt!
+  collateralAmount: BigInt!             # derived: BUY → makerAmount, SELL → takerAmount
+  tokenAmount: BigInt!                  # derived: opposite of collateralAmount
+  price: BigDecimal!                    # collateralAmount / tokenAmount
+  size: BigDecimal!                     # scaled tokenAmount
   fee: BigInt!
-  side: Int!                            # 0 BUY, 1 SELL
-  price: BigDecimal!
-  size: BigDecimal!
+  builder: Bytes!                       # bytes32 builder code (may be zero)
+  metadata: Bytes!                      # bytes32 metadata
   exchange: ExchangeType!
 }
 
@@ -38,8 +42,9 @@ type OrdersMatchedEvent @entity(immutable: true) {
   blockNumber: BigInt!
   takerOrderHash: Bytes!
   takerOrderMaker: Account!
-  makerAssetId: BigInt!
-  takerAssetId: BigInt!
+  side: Int!
+  market: Market!
+  tokenId: BigInt!
   makerAmountFilled: BigInt!
   takerAmountFilled: BigInt!
   exchange: ExchangeType!
@@ -66,10 +71,10 @@ type Market @entity {
   scaledCollateralVolume: BigDecimal!
   collateralFees: BigInt!
   scaledCollateralFees: BigDecimal!
+  lastPrice: BigDecimal!
   lastActiveTimestamp: BigInt!
 }
 
-# TODO: wire Builder entity from OrderFilled once builder topic shape is confirmed
 type Builder @entity {
   id: ID!                               # bytes32 builder code
   orderCount: BigInt!
@@ -77,6 +82,8 @@ type Builder @entity {
   scaledVolume: BigDecimal!
   fees: BigInt!
   scaledFees: BigDecimal!
+  firstSeenTimestamp: BigInt!
+  lastSeenTimestamp: BigInt!
 }
 
 enum ExchangeType {

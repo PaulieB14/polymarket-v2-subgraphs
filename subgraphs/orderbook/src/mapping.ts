@@ -13,10 +13,17 @@ import {
   Account,
   Market,
   GlobalStats,
+  Builder,
 } from "../generated/schema"
 
 const USDC_UNIT = BigDecimal.fromString("1000000")
 const GLOBAL_ID = "global"
+const SIDE_BUY: i32 = 0
+const ZERO_BUILDER = Bytes.fromHexString("0x0000000000000000000000000000000000000000000000000000000000000000")
+
+function scale(amount: BigInt): BigDecimal {
+  return amount.toBigDecimal().div(USDC_UNIT)
+}
 
 function getOrCreateGlobal(): GlobalStats {
   let g = GlobalStats.load(GLOBAL_ID)
@@ -67,6 +74,7 @@ function getOrCreateMarket(tokenId: BigInt): Market {
     m.scaledCollateralVolume = BigDecimal.zero()
     m.collateralFees = BigInt.zero()
     m.scaledCollateralFees = BigDecimal.zero()
+    m.lastPrice = BigDecimal.zero()
     m.lastActiveTimestamp = BigInt.zero()
     let g = getOrCreateGlobal()
     g.marketsCount = g.marketsCount.plus(BigInt.fromI32(1))
@@ -75,8 +83,26 @@ function getOrCreateMarket(tokenId: BigInt): Market {
   return m as Market
 }
 
-function scale(amount: BigInt): BigDecimal {
-  return amount.toBigDecimal().div(USDC_UNIT)
+function getOrCreateBuilder(code: Bytes, timestamp: BigInt): Builder | null {
+  if (code.equals(ZERO_BUILDER)) {
+    return null
+  }
+  let id = code.toHexString()
+  let b = Builder.load(id)
+  if (b == null) {
+    b = new Builder(id)
+    b.orderCount = BigInt.zero()
+    b.volume = BigInt.zero()
+    b.scaledVolume = BigDecimal.zero()
+    b.fees = BigInt.zero()
+    b.scaledFees = BigDecimal.zero()
+    b.firstSeenTimestamp = timestamp
+    b.lastSeenTimestamp = timestamp
+    let g = getOrCreateGlobal()
+    g.buildersCount = g.buildersCount.plus(BigInt.fromI32(1))
+    g.save()
+  }
+  return b
 }
 
 function recordFill(
@@ -87,22 +113,23 @@ function recordFill(
   orderHash: Bytes,
   maker: Address,
   taker: Address,
-  makerAssetId: BigInt,
-  takerAssetId: BigInt,
+  side: i32,
+  tokenId: BigInt,
   makerAmountFilled: BigInt,
   takerAmountFilled: BigInt,
   fee: BigInt,
+  builder: Bytes,
+  metadata: Bytes,
   exchange: string
 ): void {
   let makerAccount = getOrCreateAccount(maker)
   let takerAccount = getOrCreateAccount(taker)
+  let market = getOrCreateMarket(tokenId)
 
-  // makerAssetId == 0 => maker paid collateral (BUY); otherwise SELL
-  let side: i32 = makerAssetId.equals(BigInt.zero()) ? 0 : 1
-  let tokenId = side == 0 ? takerAssetId : makerAssetId
-  let collateralAmount = side == 0 ? makerAmountFilled : takerAmountFilled
-  let tokenAmount = side == 0 ? takerAmountFilled : makerAmountFilled
-
+  // BUY:  maker pays collateral, receives tokens. makerAmount = collateral, takerAmount = tokens.
+  // SELL: maker pays tokens, receives collateral. makerAmount = tokens, takerAmount = collateral.
+  let collateralAmount = side == SIDE_BUY ? makerAmountFilled : takerAmountFilled
+  let tokenAmount = side == SIDE_BUY ? takerAmountFilled : makerAmountFilled
   let price = tokenAmount.equals(BigInt.zero())
     ? BigDecimal.zero()
     : collateralAmount.toBigDecimal().div(tokenAmount.toBigDecimal())
@@ -115,20 +142,23 @@ function recordFill(
   ev.orderHash = orderHash
   ev.maker = makerAccount.id
   ev.taker = takerAccount.id
-  ev.makerAssetId = makerAssetId
-  ev.takerAssetId = takerAssetId
+  ev.side = side
+  ev.market = market.id
+  ev.tokenId = tokenId
   ev.makerAmountFilled = makerAmountFilled
   ev.takerAmountFilled = takerAmountFilled
-  ev.fee = fee
-  ev.side = side
+  ev.collateralAmount = collateralAmount
+  ev.tokenAmount = tokenAmount
   ev.price = price
   ev.size = scale(tokenAmount)
+  ev.fee = fee
+  ev.builder = builder
+  ev.metadata = metadata
   ev.exchange = exchange
   ev.save()
 
-  let market = getOrCreateMarket(tokenId)
   market.tradesQuantity = market.tradesQuantity.plus(BigInt.fromI32(1))
-  if (side == 0) {
+  if (side == SIDE_BUY) {
     market.buysQuantity = market.buysQuantity.plus(BigInt.fromI32(1))
   } else {
     market.sellsQuantity = market.sellsQuantity.plus(BigInt.fromI32(1))
@@ -137,6 +167,7 @@ function recordFill(
   market.scaledCollateralVolume = scale(market.collateralVolume)
   market.collateralFees = market.collateralFees.plus(fee)
   market.scaledCollateralFees = scale(market.collateralFees)
+  market.lastPrice = price
   market.lastActiveTimestamp = timestamp
   market.save()
 
@@ -144,7 +175,7 @@ function recordFill(
   for (let i = 0; i < accounts.length; i++) {
     let acc = accounts[i]
     acc.tradesQuantity = acc.tradesQuantity.plus(BigInt.fromI32(1))
-    if (side == 0) {
+    if (side == SIDE_BUY) {
       acc.buysQuantity = acc.buysQuantity.plus(BigInt.fromI32(1))
     } else {
       acc.sellsQuantity = acc.sellsQuantity.plus(BigInt.fromI32(1))
@@ -155,9 +186,20 @@ function recordFill(
     acc.save()
   }
 
+  let b = getOrCreateBuilder(builder, timestamp)
+  if (b != null) {
+    b.orderCount = b.orderCount.plus(BigInt.fromI32(1))
+    b.volume = b.volume.plus(collateralAmount)
+    b.scaledVolume = scale(b.volume)
+    b.fees = b.fees.plus(fee)
+    b.scaledFees = scale(b.fees)
+    b.lastSeenTimestamp = timestamp
+    b.save()
+  }
+
   let g = getOrCreateGlobal()
   g.tradesQuantity = g.tradesQuantity.plus(BigInt.fromI32(1))
-  if (side == 0) {
+  if (side == SIDE_BUY) {
     g.buysQuantity = g.buysQuantity.plus(BigInt.fromI32(1))
   } else {
     g.sellsQuantity = g.sellsQuantity.plus(BigInt.fromI32(1))
@@ -178,11 +220,13 @@ export function handleOrderFilled(event: CtfOrderFilledEvent): void {
     event.params.orderHash,
     event.params.maker,
     event.params.taker,
-    event.params.makerAssetId,
-    event.params.takerAssetId,
+    event.params.side,
+    event.params.tokenId,
     event.params.makerAmountFilled,
     event.params.takerAmountFilled,
     event.params.fee,
+    event.params.builder,
+    event.params.metadata,
     "CTF"
   )
 }
@@ -196,11 +240,13 @@ export function handleOrderFilledNegRisk(event: NegRiskOrderFilledEvent): void {
     event.params.orderHash,
     event.params.maker,
     event.params.taker,
-    event.params.makerAssetId,
-    event.params.takerAssetId,
+    event.params.side,
+    event.params.tokenId,
     event.params.makerAmountFilled,
     event.params.takerAmountFilled,
     event.params.fee,
+    event.params.builder,
+    event.params.metadata,
     "NEG_RISK"
   )
 }
@@ -212,13 +258,14 @@ function recordMatched(
   blockNumber: BigInt,
   takerOrderHash: Bytes,
   takerOrderMaker: Address,
-  makerAssetId: BigInt,
-  takerAssetId: BigInt,
+  side: i32,
+  tokenId: BigInt,
   makerAmountFilled: BigInt,
   takerAmountFilled: BigInt,
   exchange: string
 ): void {
   let account = getOrCreateAccount(takerOrderMaker)
+  let market = getOrCreateMarket(tokenId)
   let id = txHash.toHexString() + "-" + logIndex.toString()
   let ev = new OrdersMatchedEvent(id)
   ev.transactionHash = txHash
@@ -226,8 +273,9 @@ function recordMatched(
   ev.blockNumber = blockNumber
   ev.takerOrderHash = takerOrderHash
   ev.takerOrderMaker = account.id
-  ev.makerAssetId = makerAssetId
-  ev.takerAssetId = takerAssetId
+  ev.side = side
+  ev.market = market.id
+  ev.tokenId = tokenId
   ev.makerAmountFilled = makerAmountFilled
   ev.takerAmountFilled = takerAmountFilled
   ev.exchange = exchange
@@ -242,8 +290,8 @@ export function handleOrdersMatched(event: CtfOrdersMatchedEvent): void {
     event.block.number,
     event.params.takerOrderHash,
     event.params.takerOrderMaker,
-    event.params.makerAssetId,
-    event.params.takerAssetId,
+    event.params.side,
+    event.params.tokenId,
     event.params.makerAmountFilled,
     event.params.takerAmountFilled,
     "CTF"
@@ -258,8 +306,8 @@ export function handleOrdersMatchedNegRisk(event: NegRiskOrdersMatchedEvent): vo
     event.block.number,
     event.params.takerOrderHash,
     event.params.takerOrderMaker,
-    event.params.makerAssetId,
-    event.params.takerAssetId,
+    event.params.side,
+    event.params.tokenId,
     event.params.makerAmountFilled,
     event.params.takerAmountFilled,
     "NEG_RISK"

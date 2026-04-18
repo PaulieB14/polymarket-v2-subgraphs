@@ -9,21 +9,58 @@ Indexes `OrderFilled` and `OrdersMatched` from Polymarket's two V2 exchange cont
 | CTF Exchange V2 | `0xE111180000d2663C0091e4f400237545B87B996B` | 84902353 |
 | Neg Risk CTF Exchange V2 | `0xe2222d279d744050d28e00520010520000310F59` | 84902353 |
 
+## V2 event shape (confirmed from on-chain ABI)
+
+```solidity
+event OrderFilled(
+    bytes32 indexed orderHash,
+    address indexed maker,
+    address indexed taker,
+    Side   side,              // 0 BUY, 1 SELL
+    uint256 tokenId,          // single tokenId (not maker/taker asset IDs)
+    uint256 makerAmountFilled,
+    uint256 takerAmountFilled,
+    uint256 fee,              // protocol-assessed at match time
+    bytes32 builder,          // builder code for attribution (0x0 if none)
+    bytes32 metadata          // opaque metadata
+);
+
+event OrdersMatched(
+    bytes32 indexed takerOrderHash,
+    address indexed takerOrderMaker,
+    Side   side,
+    uint256 tokenId,
+    uint256 makerAmountFilled,
+    uint256 takerAmountFilled
+);
+```
+
+Key diffs from V1:
+- `side` is now a direct event param (no need to infer from `makerAssetId == 0`)
+- `tokenId` is a single field (V1 had `makerAssetId` + `takerAssetId`)
+- `builder` attribution is native to the event
+- `metadata` is new
+- `fee` is protocol-assessed, not signed in by the maker
+
 ## Entities
 
-- `OrderFilledEvent` — every matched fill, with price/size/side derived from maker/taker asset IDs
-- `OrdersMatchedEvent` — taker order aggregation events
-- `Account` — per-trader rollups (trades, volume, buys/sells)
-- `Market` — per-tokenId rollups
-- `Builder` — stub entity for builder code attribution (**TODO**: populate once event topic location is confirmed)
+- `OrderFilledEvent` — every matched fill, with derived `collateralAmount`/`tokenAmount`/`price`/`size` for convenience
+- `OrdersMatchedEvent` — taker-order aggregation events
+- `Account` — per-trader rollups (trades, volume, buy/sell counts)
+- `Market` — per-tokenId rollups with `lastPrice`
+- `Builder` — per builder-code rollups (orderCount, volume, fees); populated from the event directly
 - `GlobalStats` — platform-wide counters
 
-## Known TODOs (important)
+## Derivation conventions
 
-1. **Stub ABIs** — `abis/CtfExchangeV2.json` and `abis/NegRiskCtfExchangeV2.json` contain ONLY minimal `OrderFilled` / `OrdersMatched` event definitions based on V1 signatures. **Before deploy**, replace with the canonical ABI from Polygonscan once the V2 contracts are verified and available.
-2. **Builder attribution** — the V2 `Order` struct adds a `builder` bytes32 field (per the migration doc), but it's unclear whether it surfaces as an indexed topic on `OrderFilled`. The `Builder` entity is defined in the schema but not written to from handlers. Wire up once confirmed.
-3. **Fee field** — V2 fees are protocol-assessed at match time, not signed. The `fee` field on the emitted event is still populated but may have different meaning vs V1.
-4. **Side derivation** — current logic infers BUY/SELL from `makerAssetId == 0`. Validate against real V2 fills before trusting.
+```
+BUY  (side=0): makerAmount = collateral paid    | takerAmount = tokens received
+SELL (side=1): makerAmount = tokens sold        | takerAmount = collateral received
+
+collateralAmount = side==BUY ? makerAmount : takerAmount
+tokenAmount      = side==BUY ? takerAmount : makerAmount
+price            = collateralAmount / tokenAmount   (0…1 range)
+```
 
 ## Commands
 
@@ -33,3 +70,10 @@ npm run codegen   # generate types from ABIs + schema
 npm run build     # compile WASM
 npm run deploy    # deploy to Studio (edit slug in package.json)
 ```
+
+## TODO before mainnet deploy
+
+- [ ] Test against V2 test markets on `clob-v2.polymarket.com` (token_id `102936…7216` has liquidity)
+- [ ] Validate BUY/SELL amount mapping against a known taker trade
+- [ ] Confirm whether `FeeCharged` event (address receiver, uint256 amount) is worth indexing alongside `OrderFilled.fee`
+- [ ] Decide if pause events (`TradingPaused`/`UserPaused`) belong in this subgraph or a sibling `admin` subgraph

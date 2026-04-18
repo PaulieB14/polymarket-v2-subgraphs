@@ -28,9 +28,9 @@ dataSources:
         - name: CtfExchangeV2
           file: ./abis/CtfExchangeV2.json
       eventHandlers:
-        - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint256,uint256,uint256,uint256,uint256)
+        - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
           handler: handleOrderFilled
-        - event: OrdersMatched(indexed bytes32,indexed address,uint256,uint256,uint256,uint256)
+        - event: OrdersMatched(indexed bytes32,indexed address,uint8,uint256,uint256,uint256)
           handler: handleOrdersMatched
       file: ./src/mapping.ts
   - kind: ethereum
@@ -55,8 +55,8 @@ dataSources:
         - name: NegRiskCtfExchangeV2
           file: ./abis/NegRiskCtfExchangeV2.json
       eventHandlers:
-        - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint256,uint256,uint256,uint256,uint256)
+        - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
           handler: handleOrderFilledNegRisk
-        - event: OrdersMatched(indexed bytes32,indexed address,uint256,uint256,uint256,uint256)
+        - event: OrdersMatched(indexed bytes32,indexed address,uint8,uint256,uint256,uint256)
           handler: handleOrdersMatchedNegRisk
       file: ./src/mapping.ts
