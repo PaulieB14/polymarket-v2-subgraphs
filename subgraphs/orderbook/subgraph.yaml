@@ -1,0 +1,62 @@
+specVersion: 1.0.0
+description: Polymarket CLOB V2 orderbook — OrderFilled / OrdersMatched from CTF Exchange V2 and Neg Risk CTF Exchange V2
+repository: https://github.com/PaulieB14/polymarket-v2-subgraphs
+schema:
+  file: ./schema.graphql
+indexerHints:
+  prune: auto
+dataSources:
+  - kind: ethereum
+    name: CtfExchangeV2
+    network: matic
+    source:
+      address: "0xE111180000d2663C0091e4f400237545B87B996B"
+      abi: CtfExchangeV2
+      startBlock: 84902353
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - OrderFilledEvent
+        - OrdersMatchedEvent
+        - Market
+        - Account
+        - Builder
+        - GlobalStats
+      abis:
+        - name: CtfExchangeV2
+          file: ./abis/CtfExchangeV2.json
+      eventHandlers:
+        - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint256,uint256,uint256,uint256,uint256)
+          handler: handleOrderFilled
+        - event: OrdersMatched(indexed bytes32,indexed address,uint256,uint256,uint256,uint256)
+          handler: handleOrdersMatched
+      file: ./src/mapping.ts
+  - kind: ethereum
+    name: NegRiskCtfExchangeV2
+    network: matic
+    source:
+      address: "0xe2222d279d744050d28e00520010520000310F59"
+      abi: NegRiskCtfExchangeV2
+      startBlock: 84902353
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - OrderFilledEvent
+        - OrdersMatchedEvent
+        - Market
+        - Account
+        - Builder
+        - GlobalStats
+      abis:
+        - name: NegRiskCtfExchangeV2
+          file: ./abis/NegRiskCtfExchangeV2.json
+      eventHandlers:
+        - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint256,uint256,uint256,uint256,uint256)
+          handler: handleOrderFilledNegRisk
+        - event: OrdersMatched(indexed bytes32,indexed address,uint256,uint256,uint256,uint256)
+          handler: handleOrdersMatchedNegRisk
+      file: ./src/mapping.ts

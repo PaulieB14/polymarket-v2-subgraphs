@@ -1,0 +1,85 @@
+type GlobalStats @entity {
+  id: ID!                               # singleton "global"
+  tradesQuantity: BigInt!
+  buysQuantity: BigInt!
+  sellsQuantity: BigInt!
+  collateralVolume: BigInt!             # raw (USDC.e 6dp)
+  scaledCollateralVolume: BigDecimal!   # normalized
+  collateralFees: BigInt!
+  scaledCollateralFees: BigDecimal!
+  tradersCount: BigInt!
+  marketsCount: BigInt!
+  buildersCount: BigInt!
+}
+
+type OrderFilledEvent @entity(immutable: true) {
+  id: ID!                               # txHash-logIndex
+  transactionHash: Bytes!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  orderHash: Bytes!
+  maker: Account!
+  taker: Account!
+  makerAssetId: BigInt!
+  takerAssetId: BigInt!
+  makerAmountFilled: BigInt!
+  takerAmountFilled: BigInt!
+  fee: BigInt!
+  side: Int!                            # 0 BUY, 1 SELL
+  price: BigDecimal!
+  size: BigDecimal!
+  exchange: ExchangeType!
+}
+
+type OrdersMatchedEvent @entity(immutable: true) {
+  id: ID!                               # txHash-logIndex
+  transactionHash: Bytes!
+  timestamp: BigInt!
+  blockNumber: BigInt!
+  takerOrderHash: Bytes!
+  takerOrderMaker: Account!
+  makerAssetId: BigInt!
+  takerAssetId: BigInt!
+  makerAmountFilled: BigInt!
+  takerAmountFilled: BigInt!
+  exchange: ExchangeType!
+}
+
+type Account @entity {
+  id: ID!                               # address hex
+  tradesQuantity: BigInt!
+  buysQuantity: BigInt!
+  sellsQuantity: BigInt!
+  collateralVolume: BigInt!
+  scaledCollateralVolume: BigDecimal!
+  lastTradedTimestamp: BigInt!
+  fills: [OrderFilledEvent!]! @derivedFrom(field: "maker")
+}
+
+type Market @entity {
+  id: ID!                               # tokenId decimal string
+  tokenId: BigInt!
+  tradesQuantity: BigInt!
+  buysQuantity: BigInt!
+  sellsQuantity: BigInt!
+  collateralVolume: BigInt!
+  scaledCollateralVolume: BigDecimal!
+  collateralFees: BigInt!
+  scaledCollateralFees: BigDecimal!
+  lastActiveTimestamp: BigInt!
+}
+
+# TODO: wire Builder entity from OrderFilled once builder topic shape is confirmed
+type Builder @entity {
+  id: ID!                               # bytes32 builder code
+  orderCount: BigInt!
+  volume: BigInt!
+  scaledVolume: BigDecimal!
+  fees: BigInt!
+  scaledFees: BigDecimal!
+}
+
+enum ExchangeType {
+  CTF
+  NEG_RISK
+}
