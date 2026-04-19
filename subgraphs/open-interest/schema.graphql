@@ -1,0 +1,33 @@
+type MarketOpenInterest @entity {
+  id: ID!                                    # conditionId
+  conditionId: Bytes!
+  collateralToken: Bytes!
+  amount: BigDecimal!                        # normalized to USDC 6dp
+  amountRaw: BigInt!
+  splitCount: BigInt!
+  mergeCount: BigInt!
+  redemptionCount: BigInt!
+  createdAtBlock: BigInt!
+  createdAtTimestamp: BigInt!
+  lastUpdatedBlock: BigInt!
+  lastUpdatedTimestamp: BigInt!
+  snapshots: [OISnapshot!]! @derivedFrom(field: "market")
+}
+
+type OISnapshot @entity {
+  id: ID!                                    # conditionId-hourId
+  market: MarketOpenInterest!
+  amount: BigDecimal!
+  amountRaw: BigInt!
+  blockNumber: BigInt!
+  timestamp: BigInt!
+}
+
+type GlobalOpenInterest @entity {
+  id: ID!                                    # singleton "global"
+  amount: BigDecimal!
+  amountRaw: BigInt!
+  marketCount: Int!
+  lastUpdatedBlock: BigInt!
+  lastUpdatedTimestamp: BigInt!
+}

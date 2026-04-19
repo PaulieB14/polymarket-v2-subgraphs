@@ -1,0 +1,33 @@
+type Account @entity {
+  id: ID!                           # address hex
+  tradesQuantity: BigInt!
+  buysQuantity: BigInt!
+  sellsQuantity: BigInt!
+  collateralVolume: BigInt!         # raw USDC.e 6dp
+  scaledCollateralVolume: BigDecimal!
+  realizedPnl: BigDecimal!          # in collateral units (scaled)
+  lastTradedTimestamp: BigInt!
+  positions: [UserPosition!]! @derivedFrom(field: "account")
+}
+
+type UserPosition @entity {
+  id: ID!                           # address-tokenId
+  account: Account!
+  tokenId: BigInt!
+  amount: BigInt!                   # current token balance (6dp in CTF outcome tokens)
+  avgPrice: BigDecimal!             # weighted avg cost basis
+  totalBought: BigInt!              # cumulative tokens bought (for reference)
+  totalSold: BigInt!                # cumulative tokens sold
+  realizedPnl: BigDecimal!          # per-position realized P&L
+  lastUpdatedTimestamp: BigInt!
+}
+
+type MarketStats @entity {
+  id: ID!                           # tokenId decimal string
+  tokenId: BigInt!
+  fills: BigInt!
+  collateralVolume: BigInt!
+  scaledCollateralVolume: BigDecimal!
+  lastPrice: BigDecimal!
+  lastActiveTimestamp: BigInt!
+}

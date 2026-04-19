@@ -1,0 +1,72 @@
+specVersion: 1.0.0
+description: Polymarket CLOB V2 P&L — per-user positions, cost basis, realized P&L
+repository: https://github.com/PaulieB14/polymarket-v2-subgraphs
+schema:
+  file: ./schema.graphql
+indexerHints:
+  prune: auto
+dataSources:
+  - kind: ethereum
+    name: CtfExchangeV2
+    network: matic
+    source:
+      address: "0xE111180000d2663C0091e4f400237545B87B996B"
+      abi: CtfExchangeV2
+      startBlock: 84902353
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - UserPosition
+        - Account
+        - MarketStats
+      abis:
+        - name: CtfExchangeV2
+          file: ./abis/CtfExchangeV2.json
+      eventHandlers:
+        - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
+          handler: handleOrderFilled
+      file: ./src/mapping.ts
+  - kind: ethereum
+    name: NegRiskCtfExchangeV2
+    network: matic
+    source:
+      address: "0xe2222d279d744050d28e00520010520000310F59"
+      abi: NegRiskCtfExchangeV2
+      startBlock: 84902353
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - UserPosition
+        - Account
+        - MarketStats
+      abis:
+        - name: NegRiskCtfExchangeV2
+          file: ./abis/NegRiskCtfExchangeV2.json
+      eventHandlers:
+        - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
+          handler: handleOrderFilledNegRisk
+      file: ./src/mapping.ts
+  - kind: ethereum
+    name: ConditionalTokens
+    network: matic
+    source:
+      address: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+      abi: ConditionalTokens
+      startBlock: 84902353
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - UserPosition
+      abis:
+        - name: ConditionalTokens
+          file: ./abis/ConditionalTokens.json
+      eventHandlers:
+        - event: TransferSingle(indexed address,indexed address,indexed address,uint256,uint256)
+          handler: handleTransferSingle
+      file: ./src/mapping.ts
