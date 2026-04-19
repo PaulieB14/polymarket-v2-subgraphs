@@ -1,4 +1,4 @@
-type MarketOpenInterest @entity {
+type MarketOpenInterest @entity(immutable: false) {
   id: ID!                                    # conditionId
   conditionId: Bytes!
   collateralToken: Bytes!
@@ -14,7 +14,7 @@ type MarketOpenInterest @entity {
   snapshots: [OISnapshot!]! @derivedFrom(field: "market")
 }
 
-type OISnapshot @entity {
+type OISnapshot @entity(immutable: false) {
   id: ID!                                    # conditionId-hourId
   market: MarketOpenInterest!
   amount: BigDecimal!
@@ -23,7 +23,7 @@ type OISnapshot @entity {
   timestamp: BigInt!
 }
 
-type GlobalOpenInterest @entity {
+type GlobalOpenInterest @entity(immutable: false) {
   id: ID!                                    # singleton "global"
   amount: BigDecimal!
   amountRaw: BigInt!

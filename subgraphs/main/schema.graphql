@@ -1,4 +1,4 @@
-type Condition @entity {
+type Condition @entity(immutable: false) {
   id: ID!                            # conditionId hex
   conditionId: Bytes!
   oracle: Bytes!
@@ -12,7 +12,7 @@ type Condition @entity {
   resolvedAtTimestamp: BigInt
 }
 
-type Global @entity {
+type Global @entity(immutable: false) {
   id: ID!                            # singleton "global"
   numConditions: BigInt!
   numOpenConditions: BigInt!

@@ -1,4 +1,4 @@
-type GlobalStats @entity {
+type GlobalStats @entity(immutable: false) {
   id: ID!                               # singleton "global"
   tradesQuantity: BigInt!
   buysQuantity: BigInt!
@@ -50,7 +50,7 @@ type OrdersMatchedEvent @entity(immutable: true) {
   exchange: ExchangeType!
 }
 
-type Account @entity {
+type Account @entity(immutable: false) {
   id: ID!                               # address hex
   tradesQuantity: BigInt!
   buysQuantity: BigInt!
@@ -61,7 +61,7 @@ type Account @entity {
   fills: [OrderFilledEvent!]! @derivedFrom(field: "maker")
 }
 
-type Market @entity {
+type Market @entity(immutable: false) {
   id: ID!                               # tokenId decimal string
   tokenId: BigInt!
   tradesQuantity: BigInt!
@@ -75,7 +75,7 @@ type Market @entity {
   lastActiveTimestamp: BigInt!
 }
 
-type Builder @entity {
+type Builder @entity(immutable: false) {
   id: ID!                               # bytes32 builder code
   orderCount: BigInt!
   volume: BigInt!
