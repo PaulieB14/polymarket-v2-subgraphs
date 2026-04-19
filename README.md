@@ -13,11 +13,12 @@ Subgraphs for Polymarket CLOB V2 on Polygon. Built for the **2026-04-28** V2 mig
 
 | Subgraph | Tracks | Data sources |
 |---|---|---|
+| [`main`](./subgraphs/main) | Conditions, resolution status, global counters | Conditional Tokens (unchanged in V2) |
 | [`orderbook`](./subgraphs/orderbook) | Order fills, matches, per-market + per-trader volume, **builder attribution** | CTF Exchange V2, Neg Risk CTF Exchange V2 |
 | [`pnl`](./subgraphs/pnl) | Per-user positions with cost basis, realized P&L, per-market aggregates | Both V2 exchanges, Conditional Tokens (TransferSingle) |
 | [`open-interest`](./subgraphs/open-interest) | Per-market OI, hourly snapshots, global OI | Conditional Tokens (unchanged in V2) |
 
-All three live under one monorepo so shared ABIs + conventions stay in sync.
+All four live under one monorepo so shared ABIs + conventions stay in sync.
 
 ## V2 contract addresses
 
@@ -32,7 +33,7 @@ Key:
 
 ## Non-obvious V2 quirk — adapter masking
 
-V2 splits/merges/redeems from the wallet flow go through `CtfCollateralAdapter` (`0xADa1…9718`) and `NegRiskCtfCollateralAdapter` (`0xAdA2…c6F1`). That means `PositionSplit.stakeholder` is the adapter, not the EOA. The current `open-interest` subgraph is per-market (not per-user), so it's unaffected — but any future per-user attribution needs tx-level unmasking via the pUSD burn `Transfer.from`.
+V2 splits/merges/redeems from the wallet flow go through `CtfCollateralAdapter` (`0xADa1…9718`) and `NegRiskCtfCollateralAdapter` (`0xAdA2…c6F1`). That means `PositionSplit.stakeholder` is the adapter, not the EOA. Current schemas are per-market (not per-user), so they're unaffected — but any future per-user attribution needs tx-level unmasking via the pUSD burn `Transfer.from`.
 
 Details in [contracts.md](./contracts.md).
 
@@ -46,10 +47,11 @@ npm run build
 npm run deploy    # edit Studio slug in each subgraph's package.json
 ```
 
-## Per-subgraph status
+## Start-block conventions
 
-| Subgraph | ABI source | Status |
+| Subgraph | Start block | Why |
 |---|---|---|
-| orderbook | canonical from Etherscan V2 API | scaffold, ready to build |
-| pnl       | reuses orderbook ABIs + ConditionalTokens | scaffold, simple cost-basis tracking |
-| open-interest | ConditionalTokens (unchanged) | mirrors existing `polymarket-open-interest` handler — starts at V1 genesis so cumulative OI is correct |
+| main | 28000000 (V1 genesis) | Conditions created pre-V2 still trade in V2 |
+| orderbook | 84902353 (V2 deploy) | V2-only exchange events |
+| pnl | 84902353 (V2 deploy) | V2-only cost basis; query V1 P&L separately for history |
+| open-interest | 28000000 (V1 genesis) | OI is cumulative — starting at V2 would erase running state |

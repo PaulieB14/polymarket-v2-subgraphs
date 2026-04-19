@@ -1,0 +1,22 @@
+type Condition @entity {
+  id: ID!                            # conditionId hex
+  conditionId: Bytes!
+  oracle: Bytes!
+  questionId: Bytes!
+  outcomeSlotCount: Int!
+  resolved: Boolean!
+  payoutNumerators: [BigInt!]        # null until resolved
+  preparedAtBlock: BigInt!
+  preparedAtTimestamp: BigInt!
+  resolvedAtBlock: BigInt
+  resolvedAtTimestamp: BigInt
+}
+
+type Global @entity {
+  id: ID!                            # singleton "global"
+  numConditions: BigInt!
+  numOpenConditions: BigInt!
+  numResolvedConditions: BigInt!
+  lastUpdatedBlock: BigInt!
+  lastUpdatedTimestamp: BigInt!
+}
