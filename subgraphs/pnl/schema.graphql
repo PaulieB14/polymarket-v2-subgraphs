@@ -22,7 +22,7 @@ type UserPosition @entity(immutable: false) {
   lastUpdatedTimestamp: BigInt!
 }
 
-type MarketStats @entity(immutable: false) {
+type Market @entity(immutable: false) {
   id: ID!                           # tokenId decimal string
   tokenId: BigInt!
   fills: BigInt!
