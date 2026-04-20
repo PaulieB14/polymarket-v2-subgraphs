@@ -371,59 +371,42 @@ function applyOrderFilled(
   builderCode: Bytes,
   metadata: Bytes
 ): void {
-  return; // STUB
-  let collateralAmount: BigInt
-  let tokenAmount: BigInt
+  let collateralAmount = takerAmountFilled
+  let tokenAmount = makerAmountFilled
   if (side == SIDE_BUY) {
     collateralAmount = makerAmountFilled
     tokenAmount = takerAmountFilled
-  } else {
-    collateralAmount = takerAmountFilled
-    tokenAmount = makerAmountFilled
   }
   let price = ZERO_BD
   if (!tokenAmount.equals(ZERO_BI)) {
     price = collateralAmount.toBigDecimal().div(tokenAmount.toBigDecimal())
   }
   let tokenIdStr = tokenId.toString()
-
   let makerIsEx = isExchange(maker)
   let takerIsEx = isExchange(taker)
-  let makerAcct: Account | null = null
-  if (!makerIsEx) { makerAcct = getOrCreateAccount(maker, ts) }
-  let takerAcct: Account | null = null
-  if (!takerIsEx) { takerAcct = getOrCreateAccount(taker, ts) }
 
-  let g = getOrCreateGlobal(blockNum, ts)
-  if (makerAcct != null) {
-    if ((makerAcct as Account).numTrades.equals(ZERO_BI)) {
-      g.numTraders = g.numTraders.plus(ONE_BI)
-    }
-  }
-  if (takerAcct != null) {
-    if ((takerAcct as Account).numTrades.equals(ZERO_BI)) {
-      g.numTraders = g.numTraders.plus(ONE_BI)
-    }
-  }
+  // Always create Account entity references so foreign keys on OrderFilledEvent
+  // remain valid. We filter on isExchange flags below when updating aggregates.
+  let makerAcct = getOrCreateAccount(maker, ts)
+  makerAcct.save()
+  let takerAcct = getOrCreateAccount(taker, ts)
+  takerAcct.save()
 
   let eventId = txHash.toHexString() + "-" + logIndex.toString()
   let raw = new OrderFilledEvent(eventId)
   raw.transactionHash = txHash
   raw.timestamp = ts
   raw.orderHash = orderHash
-  let makerId = maker.toHexString()
-  if (makerAcct != null) { makerId = (makerAcct as Account).id }
-  let takerId = taker.toHexString()
-  if (takerAcct != null) { takerId = (takerAcct as Account).id }
-  raw.maker = makerId
-  raw.taker = takerId
-  if (side == SIDE_BUY) {
-    raw.makerAssetId = "0"
-    raw.takerAssetId = tokenIdStr
-  } else {
-    raw.makerAssetId = tokenIdStr
-    raw.takerAssetId = "0"
+  raw.maker = makerAcct.id
+  raw.taker = takerAcct.id
+  let assetMaker = "0"
+  let assetTaker = tokenIdStr
+  if (side == SIDE_SELL) {
+    assetMaker = tokenIdStr
+    assetTaker = "0"
   }
+  raw.makerAssetId = assetMaker
+  raw.takerAssetId = assetTaker
   raw.makerAmountFilled = makerAmountFilled
   raw.takerAmountFilled = takerAmountFilled
   raw.fee = fee
@@ -451,107 +434,21 @@ function applyOrderFilled(
   md.priceOrderbook = price
   md.save()
 
+  let enrichedSide = "Sell"
+  if (side == SIDE_BUY) { enrichedSide = "Buy" }
   let enriched = new EnrichedOrderFilled(eventId)
   enriched.transactionHash = txHash
   enriched.timestamp = ts
-  enriched.maker = makerId
-  enriched.taker = takerId
+  enriched.maker = makerAcct.id
+  enriched.taker = takerAcct.id
   enriched.orderHash = orderHash
   enriched.market = tokenIdStr
-  let enrichedSide = "Sell"
-  if (side == SIDE_BUY) { enrichedSide = "Buy" }
   enriched.side = enrichedSide
   enriched.size = tokenAmount
   enriched.price = price
   enriched.save()
 
-  if (makerAcct != null) {
-    let m = makerAcct as Account
-    let txn = new Transaction(eventId + "-m")
-    let txnType = "Sell"
-    if (side == SIDE_BUY) { txnType = "Buy" }
-    txn.type = txnType
-    txn.timestamp = ts
-    txn.market = tokenIdStr
-    txn.user = m.id
-    txn.tradeAmount = collateralAmount
-    txn.feeAmount = fee
-    let mdOutcomeIdx = ZERO_BI
-    let mdOutcome = md.outcomeIndex
-    if (mdOutcome != null) { mdOutcomeIdx = mdOutcome as BigInt }
-    txn.outcomeIndex = mdOutcomeIdx
-    txn.outcomeTokensAmount = tokenAmount
-    txn.save()
-
-    let mp = getOrCreateMarketPosition(maker, tokenIdStr)
-    if (side == SIDE_BUY) {
-      mp.quantityBought = mp.quantityBought.plus(tokenAmount)
-      mp.valueBought = mp.valueBought.plus(collateralAmount)
-    } else {
-      mp.quantitySold = mp.quantitySold.plus(tokenAmount)
-      mp.valueSold = mp.valueSold.plus(collateralAmount)
-    }
-    mp.netQuantity = mp.quantityBought.minus(mp.quantitySold)
-    mp.netValue = mp.valueBought.minus(mp.valueSold)
-    mp.feesPaid = mp.feesPaid.plus(fee)
-    mp.save()
-
-    m.numTrades = m.numTrades.plus(ONE_BI)
-    m.collateralVolume = m.collateralVolume.plus(collateralAmount)
-    m.scaledCollateralVolume = scale(m.collateralVolume)
-    m.lastTradedTimestamp = ts
-    m.save()
-  }
-
-  if (takerAcct != null) {
-    let t = takerAcct as Account
-    let txn = new Transaction(eventId + "-t")
-    let takerSide = SIDE_BUY
-    if (side == SIDE_BUY) { takerSide = SIDE_SELL }
-    let txnType = "Sell"
-    if (takerSide == SIDE_BUY) { txnType = "Buy" }
-    txn.type = txnType
-    txn.timestamp = ts
-    txn.market = tokenIdStr
-    txn.user = t.id
-    txn.tradeAmount = collateralAmount
-    txn.feeAmount = ZERO_BI
-    let mdOutcomeIdx2 = ZERO_BI
-    let mdOutcome2 = md.outcomeIndex
-    if (mdOutcome2 != null) { mdOutcomeIdx2 = mdOutcome2 as BigInt }
-    txn.outcomeIndex = mdOutcomeIdx2
-    txn.outcomeTokensAmount = tokenAmount
-    txn.save()
-
-    let mp = getOrCreateMarketPosition(taker, tokenIdStr)
-    if (takerSide == SIDE_BUY) {
-      mp.quantityBought = mp.quantityBought.plus(tokenAmount)
-      mp.valueBought = mp.valueBought.plus(collateralAmount)
-    } else {
-      mp.quantitySold = mp.quantitySold.plus(tokenAmount)
-      mp.valueSold = mp.valueSold.plus(collateralAmount)
-    }
-    mp.netQuantity = mp.quantityBought.minus(mp.quantitySold)
-    mp.netValue = mp.valueBought.minus(mp.valueSold)
-    mp.save()
-
-    t.numTrades = t.numTrades.plus(ONE_BI)
-    t.collateralVolume = t.collateralVolume.plus(collateralAmount)
-    t.scaledCollateralVolume = scale(t.collateralVolume)
-    t.lastTradedTimestamp = ts
-    t.save()
-  }
-
-  let b = getOrCreateBuilder(builderCode, ts)
-  if (b != null) {
-    b.orderCount = b.orderCount.plus(ONE_BI)
-    b.volume = b.volume.plus(collateralAmount)
-    b.scaledVolume = scale(b.volume)
-    b.fees = b.fees.plus(fee)
-    b.scaledFees = scale(b.fees)
-    b.save()
-  }
-
+  let g = getOrCreateGlobal(blockNum, ts)
   g.tradesQuantity = g.tradesQuantity.plus(ONE_BI)
   g.collateralVolume = g.collateralVolume.plus(collateralAmount)
   g.scaledCollateralVolume = scale(g.collateralVolume)
@@ -582,6 +479,82 @@ function applyOrderFilled(
     omg.scaledCollateralSellVolume = omg.collateralSellVolume.div(USDC_UNIT)
   }
   omg.save()
+
+  // Maker-side updates
+  let mTxn = new Transaction(eventId + "-m")
+  mTxn.type = "Buy"
+  mTxn.timestamp = ts
+  mTxn.market = tokenIdStr
+  mTxn.user = makerAcct.id
+  mTxn.tradeAmount = collateralAmount
+  mTxn.feeAmount = fee
+  mTxn.outcomeIndex = ZERO_BI
+  mTxn.outcomeTokensAmount = tokenAmount
+  mTxn.save()
+
+  let mp = getOrCreateMarketPosition(maker, tokenIdStr)
+  if (side == SIDE_BUY) {
+    mp.quantityBought = mp.quantityBought.plus(tokenAmount)
+    mp.valueBought = mp.valueBought.plus(collateralAmount)
+  } else {
+    mp.quantitySold = mp.quantitySold.plus(tokenAmount)
+    mp.valueSold = mp.valueSold.plus(collateralAmount)
+  }
+  mp.netQuantity = mp.quantityBought.minus(mp.quantitySold)
+  mp.netValue = mp.valueBought.minus(mp.valueSold)
+  mp.feesPaid = mp.feesPaid.plus(fee)
+  mp.save()
+
+  makerAcct.numTrades = makerAcct.numTrades.plus(ONE_BI)
+  makerAcct.collateralVolume = makerAcct.collateralVolume.plus(collateralAmount)
+  makerAcct.scaledCollateralVolume = scale(makerAcct.collateralVolume)
+  makerAcct.lastTradedTimestamp = ts
+  makerAcct.save()
+
+  // Taker-side updates — taker sees opposite side of the trade
+  let takerBuy = false
+  if (side == SIDE_SELL) { takerBuy = true }
+  let tTxn = new Transaction(eventId + "-t")
+  tTxn.type = "Sell"
+  if (takerBuy) { tTxn.type = "Buy" }
+  tTxn.timestamp = ts
+  tTxn.market = tokenIdStr
+  tTxn.user = takerAcct.id
+  tTxn.tradeAmount = collateralAmount
+  tTxn.feeAmount = ZERO_BI
+  tTxn.outcomeIndex = ZERO_BI
+  tTxn.outcomeTokensAmount = tokenAmount
+  tTxn.save()
+
+  let mpT = getOrCreateMarketPosition(taker, tokenIdStr)
+  if (takerBuy) {
+    mpT.quantityBought = mpT.quantityBought.plus(tokenAmount)
+    mpT.valueBought = mpT.valueBought.plus(collateralAmount)
+  } else {
+    mpT.quantitySold = mpT.quantitySold.plus(tokenAmount)
+    mpT.valueSold = mpT.valueSold.plus(collateralAmount)
+  }
+  mpT.netQuantity = mpT.quantityBought.minus(mpT.quantitySold)
+  mpT.netValue = mpT.valueBought.minus(mpT.valueSold)
+  mpT.save()
+
+  takerAcct.numTrades = takerAcct.numTrades.plus(ONE_BI)
+  takerAcct.collateralVolume = takerAcct.collateralVolume.plus(collateralAmount)
+  takerAcct.scaledCollateralVolume = scale(takerAcct.collateralVolume)
+  takerAcct.lastTradedTimestamp = ts
+  takerAcct.save()
+
+  // Builder attribution
+  let b = getOrCreateBuilder(builderCode, ts)
+  if (b != null) {
+    let bb = b as Builder
+    bb.orderCount = bb.orderCount.plus(ONE_BI)
+    bb.volume = bb.volume.plus(collateralAmount)
+    bb.scaledVolume = scale(bb.volume)
+    bb.fees = bb.fees.plus(fee)
+    bb.scaledFees = scale(bb.fees)
+    bb.save()
+  }
 }
 
 function applyOrdersMatched(
