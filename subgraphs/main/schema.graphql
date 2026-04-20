@@ -1,22 +1,273 @@
-type Condition @entity {
-  id: ID!                            # conditionId hex
-  conditionId: Bytes!
+# Polymarket V2 Main — monolithic subgraph mirroring V1 main (QmdyCguL…QX8a)
+# with V2 event shapes. FPMM entities are dropped (V2 is CLOB-only).
+
+# ── Platform-wide aggregates ───────────────────────────────────────────────
+
+type Global @entity(immutable: false) {
+  "ID is empty string, this is a singleton"
+  id: ID!
+
+  # Condition catalog
+  numConditions: Int!
+  numOpenConditions: Int!
+  numClosedConditions: Int!
+
+  "Number of unique traders interacting with Polymarket"
+  numTraders: BigInt!
+
+  # Exchange aggregates
+  tradesQuantity: BigInt!
+  buysQuantity: BigInt!
+  sellsQuantity: BigInt!
+  collateralVolume: BigInt!
+  scaledCollateralVolume: BigDecimal!
+  collateralFees: BigInt!
+  scaledCollateralFees: BigDecimal!
+  collateralBuyVolume: BigInt!
+  scaledCollateralBuyVolume: BigDecimal!
+  collateralSellVolume: BigInt!
+  scaledCollateralSellVolume: BigDecimal!
+
+  lastUpdatedBlock: BigInt!
+  lastUpdatedTimestamp: BigInt!
+}
+
+# Platform aggregate covering only exchange activity
+type OrdersMatchedGlobal @entity(immutable: false) {
+  "ID is empty string, this is a singleton"
+  id: ID!
+  tradesQuantity: BigInt!
+  buysQuantity: BigInt!
+  sellsQuantity: BigInt!
+  collateralVolume: BigDecimal!
+  scaledCollateralVolume: BigDecimal!
+  collateralBuyVolume: BigDecimal!
+  scaledCollateralBuyVolume: BigDecimal!
+  collateralSellVolume: BigDecimal!
+  scaledCollateralSellVolume: BigDecimal!
+}
+
+# ── Users ──────────────────────────────────────────────────────────────────
+
+type Account @entity(immutable: false) {
+  "User address"
+  id: ID!
+  creationTimestamp: BigInt!
+  lastSeenTimestamp: BigInt!
+  lastTradedTimestamp: BigInt!
+  numTrades: BigInt!
+  collateralVolume: BigInt!
+  scaledCollateralVolume: BigDecimal!
+
+  marketPositions: [MarketPosition!]! @derivedFrom(field: "user")
+  transactions: [Transaction!]! @derivedFrom(field: "user")
+  splits: [Split!]! @derivedFrom(field: "stakeholder")
+  merges: [Merge!]! @derivedFrom(field: "stakeholder")
+  redemptions: [Redemption!]! @derivedFrom(field: "redeemer")
+
+  "Realized profit from trades, merges, redemptions"
+  profit: BigInt!
+  scaledProfit: BigDecimal!
+  marketProfits: [MarketProfit!]! @derivedFrom(field: "user")
+}
+
+# ── Tokens / collateral ────────────────────────────────────────────────────
+
+type Collateral @entity(immutable: false) {
+  "Token address"
+  id: ID!
+  name: String!
+  symbol: String!
+  decimals: Int!
+}
+
+# ── Conditional Tokens ─────────────────────────────────────────────────────
+
+type Condition @entity(immutable: false) {
+  id: ID!
+  "Address which can resolve this condition (typically UMA CTF Adapter or Neg Risk Adapter)"
   oracle: Bytes!
   questionId: Bytes!
   outcomeSlotCount: Int!
-  resolved: Boolean!
-  payoutNumerators: [BigInt!]        # null until resolved
+
+  "Timestamp at which this condition was resolved"
+  resolutionTimestamp: BigInt
+  "Fraction of collateral assigned to each outcome (normalized 0..1)"
+  payouts: [BigDecimal!]
+  payoutNumerators: [BigInt!]
+  payoutDenominator: BigInt
+  resolutionHash: Bytes
+
+  "Prepared block/timestamp"
   preparedAtBlock: BigInt!
   preparedAtTimestamp: BigInt!
-  resolvedAtBlock: BigInt
-  resolvedAtTimestamp: BigInt
+
+  markets: [MarketData!]! @derivedFrom(field: "condition")
 }
 
-type Global @entity {
-  id: ID!                            # singleton "global"
-  numConditions: BigInt!
-  numOpenConditions: BigInt!
-  numResolvedConditions: BigInt!
-  lastUpdatedBlock: BigInt!
-  lastUpdatedTimestamp: BigInt!
+# Split of collateral → outcome tokens
+type Split @entity(immutable: true) {
+  "txHash-logIndex"
+  id: ID!
+  timestamp: BigInt!
+  stakeholder: Account!
+  collateralToken: Collateral!
+  parentCollectionId: Bytes!
+  condition: Condition!
+  partition: [BigInt!]!
+  amount: BigInt!
+}
+
+# Merge of outcome tokens → collateral
+type Merge @entity(immutable: true) {
+  id: ID!
+  timestamp: BigInt!
+  stakeholder: Account!
+  collateralToken: Collateral!
+  parentCollectionId: Bytes!
+  condition: Condition!
+  partition: [BigInt!]!
+  amount: BigInt!
+}
+
+# Redemption of a resolved condition
+type Redemption @entity(immutable: true) {
+  id: ID!
+  timestamp: BigInt!
+  redeemer: Account!
+  collateralToken: Collateral!
+  parentCollectionId: Bytes!
+  condition: Condition!
+  indexSets: [BigInt!]!
+  payout: BigInt!
+}
+
+# ── Market metadata — THE ERC-1155 tokenId → Condition mapping ──────────────
+
+type MarketData @entity(immutable: false) {
+  "ERC-1155 positionId (tokenId) of the CTF outcome asset"
+  id: ID!
+  condition: Condition!
+  "Which outcome slot (e.g. 0=YES, 1=NO for binary markets)"
+  outcomeIndex: BigInt
+  "Latest on-chain orderbook price for this outcome token"
+  priceOrderbook: BigDecimal
+}
+
+# ── Per-user per-market tracking ───────────────────────────────────────────
+
+type MarketPosition @entity(immutable: false) {
+  "user-tokenId"
+  id: ID!
+  market: MarketData!
+  user: Account!
+  quantityBought: BigInt!
+  quantitySold: BigInt!
+  netQuantity: BigInt!
+  valueBought: BigInt!
+  valueSold: BigInt!
+  netValue: BigInt!
+  feesPaid: BigInt!
+}
+
+# Per-user per-condition realized profit (covers both YES/NO under same condition)
+type MarketProfit @entity(immutable: false) {
+  "conditionId-userAddress"
+  id: ID!
+  user: Account!
+  condition: Condition!
+  profit: BigInt!
+  scaledProfit: BigDecimal!
+}
+
+# ── Transactions ───────────────────────────────────────────────────────────
+
+enum TradeType {
+  Buy
+  Sell
+}
+
+type Transaction @entity(immutable: true) {
+  "txHash-logIndex"
+  id: ID!
+  type: TradeType!
+  timestamp: BigInt!
+  market: MarketData!
+  user: Account!
+  tradeAmount: BigInt!
+  feeAmount: BigInt!
+  outcomeIndex: BigInt!
+  outcomeTokensAmount: BigInt!
+}
+
+# ── Raw exchange events ────────────────────────────────────────────────────
+
+type OrderFilledEvent @entity(immutable: true) {
+  "txHash-logIndex"
+  id: ID!
+  transactionHash: Bytes!
+  timestamp: BigInt!
+  orderHash: Bytes!
+  maker: Account!
+  taker: Account!
+  makerAssetId: String!
+  takerAssetId: String!
+  makerAmountFilled: BigInt!
+  takerAmountFilled: BigInt!
+  fee: BigInt!
+  builder: Bytes!
+  metadata: Bytes!
+}
+
+type OrdersMatchedEvent @entity(immutable: true) {
+  id: ID!
+  timestamp: BigInt!
+  makerAssetID: BigInt!
+  takerAssetID: BigInt!
+  makerAmountFilled: BigInt!
+  takerAmountFilled: BigInt!
+}
+
+# EnrichedOrderFilled — OrderFilledEvent with price, size, side derived
+type EnrichedOrderFilled @entity(immutable: true) {
+  id: ID!
+  transactionHash: Bytes!
+  timestamp: BigInt!
+  maker: Account!
+  taker: Account!
+  orderHash: Bytes!
+  market: Orderbook!
+  side: TradeType!
+  size: BigInt!
+  price: BigDecimal!
+}
+
+# Per-tokenId orderbook aggregates
+type Orderbook @entity(immutable: false) {
+  "Token Id"
+  id: ID!
+  tradesQuantity: BigInt!
+  buysQuantity: BigInt!
+  sellsQuantity: BigInt!
+  collateralVolume: BigInt!
+  scaledCollateralVolume: BigDecimal!
+  collateralBuyVolume: BigInt!
+  scaledCollateralBuyVolume: BigDecimal!
+  collateralSellVolume: BigInt!
+  scaledCollateralSellVolume: BigDecimal!
+  lastActiveDay: BigInt!
+  lastPrice: BigDecimal!
+}
+
+# Builder attribution (unique to V2)
+type Builder @entity(immutable: false) {
+  "bytes32 builder code"
+  id: ID!
+  orderCount: BigInt!
+  volume: BigInt!
+  scaledVolume: BigDecimal!
+  fees: BigInt!
+  scaledFees: BigDecimal!
+  firstSeenTimestamp: BigInt!
+  lastSeenTimestamp: BigInt!
 }
