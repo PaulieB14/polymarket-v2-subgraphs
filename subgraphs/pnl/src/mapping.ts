@@ -1,4 +1,4 @@
-import { BigInt, BigDecimal, Address, Bytes } from "@graphprotocol/graph-ts"
+import { BigInt, BigDecimal, Address } from "@graphprotocol/graph-ts"
 import {
   OrderFilled as CtfOrderFilledEvent,
 } from "../generated/CtfExchangeV2/CtfExchangeV2"
@@ -6,16 +6,21 @@ import {
   OrderFilled as NegRiskOrderFilledEvent,
 } from "../generated/NegRiskCtfExchangeV2/NegRiskCtfExchangeV2"
 import {
-  TransferSingle,
-} from "../generated/ConditionalTokens/ConditionalTokens"
-import {
   Account,
   UserPosition,
-  MarketStats,
+  Market,
 } from "../generated/schema"
 
 const USDC_UNIT = BigDecimal.fromString("1000000")
 const SIDE_BUY: i32 = 0
+const SIDE_SELL: i32 = 1
+
+const CTF_EXCHANGE = Address.fromString("0xe111180000d2663c0091e4f400237545b87b996b")
+const NEG_RISK_EXCHANGE = Address.fromString("0xe2222d279d744050d28e00520010520000310f59")
+
+function isExchangeContract(addr: Address): boolean {
+  return addr.equals(CTF_EXCHANGE) || addr.equals(NEG_RISK_EXCHANGE)
+}
 
 function scale(amount: BigInt): BigDecimal {
   return amount.toBigDecimal().div(USDC_UNIT)
@@ -58,11 +63,11 @@ function getOrCreatePosition(user: Address, tokenId: BigInt): UserPosition {
   return p as UserPosition
 }
 
-function getOrCreateMarket(tokenId: BigInt): MarketStats {
+function getOrCreateMarket(tokenId: BigInt): Market {
   let id = tokenId.toString()
-  let m = MarketStats.load(id)
+  let m = Market.load(id)
   if (m == null) {
-    m = new MarketStats(id)
+    m = new Market(id)
     m.tokenId = tokenId
     m.fills = BigInt.zero()
     m.collateralVolume = BigInt.zero()
@@ -70,43 +75,30 @@ function getOrCreateMarket(tokenId: BigInt): MarketStats {
     m.lastPrice = BigDecimal.zero()
     m.lastActiveTimestamp = BigInt.zero()
   }
-  return m as MarketStats
+  return m as Market
 }
 
-// Apply a buy/sell against the buyer's position.
-// side==BUY:  buyer pays collateral, receives tokens. maker's buyer state = buying.
-// side==SELL: buyer sells tokens, receives collateral.
-// NOTE: Polymarket has both makers and takers. We update the MAKER's position here;
-// the taker position flows through TransferSingle on the CTF contract naturally.
-function applyFill(
-  maker: Address,
-  side: i32,
+// Apply one side of a fill to a single user. effectiveSide is that user's perspective.
+// BUY  => user received tokens, paid collateral. Update cost basis (weighted avg).
+// SELL => user gave tokens, received collateral. Realize P&L against existing position.
+function applyTradeToUser(
+  user: Address,
+  effectiveSide: i32,
+  collateralAmount: BigInt,
+  tokenAmount: BigInt,
+  price: BigDecimal,
   tokenId: BigInt,
-  makerAmountFilled: BigInt,
-  takerAmountFilled: BigInt,
-  fee: BigInt,
   timestamp: BigInt
 ): void {
-  let account = getOrCreateAccount(maker)
-  let position = getOrCreatePosition(maker, tokenId)
-  let market = getOrCreateMarket(tokenId)
-
-  let collateralAmount: BigInt
-  let tokenAmount: BigInt
-  if (side == SIDE_BUY) {
-    collateralAmount = makerAmountFilled
-    tokenAmount = takerAmountFilled
-  } else {
-    collateralAmount = takerAmountFilled
-    tokenAmount = makerAmountFilled
+  // Skip exchange contracts — they appear as maker/taker in matchOrders flows
+  if (isExchangeContract(user)) {
+    return
   }
 
-  let price = tokenAmount.equals(BigInt.zero())
-    ? BigDecimal.zero()
-    : collateralAmount.toBigDecimal().div(tokenAmount.toBigDecimal())
+  let account = getOrCreateAccount(user)
+  let position = getOrCreatePosition(user, tokenId)
 
-  if (side == SIDE_BUY) {
-    // weighted avg cost basis
+  if (effectiveSide == SIDE_BUY) {
     let oldNotional = position.amount.toBigDecimal().times(position.avgPrice)
     let addNotional = tokenAmount.toBigDecimal().times(price)
     let newAmount = position.amount.plus(tokenAmount)
@@ -117,7 +109,7 @@ function applyFill(
     position.totalBought = position.totalBought.plus(tokenAmount)
     account.buysQuantity = account.buysQuantity.plus(BigInt.fromI32(1))
   } else {
-    // realized P&L on the portion sold (clamped to current holdings to avoid negative balance)
+    // Realized P&L clamped to current holdings to prevent negative balance
     let soldAgainstHolding = position.amount.lt(tokenAmount) ? position.amount : tokenAmount
     let pnlDelta = price.minus(position.avgPrice).times(soldAgainstHolding.toBigDecimal())
     position.realizedPnl = position.realizedPnl.plus(pnlDelta)
@@ -134,7 +126,30 @@ function applyFill(
   account.scaledCollateralVolume = scale(account.collateralVolume)
   account.lastTradedTimestamp = timestamp
   account.save()
+}
 
+function applyFill(
+  maker: Address,
+  taker: Address,
+  makerSide: i32,
+  tokenId: BigInt,
+  makerAmountFilled: BigInt,
+  takerAmountFilled: BigInt,
+  timestamp: BigInt
+): void {
+  let collateralAmount = makerSide == SIDE_BUY ? makerAmountFilled : takerAmountFilled
+  let tokenAmount = makerSide == SIDE_BUY ? takerAmountFilled : makerAmountFilled
+  let price = tokenAmount.equals(BigInt.zero())
+    ? BigDecimal.zero()
+    : collateralAmount.toBigDecimal().div(tokenAmount.toBigDecimal())
+
+  // Maker sees the trade as-is
+  applyTradeToUser(maker, makerSide, collateralAmount, tokenAmount, price, tokenId, timestamp)
+  // Taker sees the opposite side
+  let takerSide = makerSide == SIDE_BUY ? SIDE_SELL : SIDE_BUY
+  applyTradeToUser(taker, takerSide, collateralAmount, tokenAmount, price, tokenId, timestamp)
+
+  let market = getOrCreateMarket(tokenId)
   market.fills = market.fills.plus(BigInt.fromI32(1))
   market.collateralVolume = market.collateralVolume.plus(collateralAmount)
   market.scaledCollateralVolume = scale(market.collateralVolume)
@@ -146,11 +161,11 @@ function applyFill(
 export function handleOrderFilled(event: CtfOrderFilledEvent): void {
   applyFill(
     event.params.maker,
+    event.params.taker,
     event.params.side,
     event.params.tokenId,
     event.params.makerAmountFilled,
     event.params.takerAmountFilled,
-    event.params.fee,
     event.block.timestamp
   )
 }
@@ -158,43 +173,11 @@ export function handleOrderFilled(event: CtfOrderFilledEvent): void {
 export function handleOrderFilledNegRisk(event: NegRiskOrderFilledEvent): void {
   applyFill(
     event.params.maker,
+    event.params.taker,
     event.params.side,
     event.params.tokenId,
     event.params.makerAmountFilled,
     event.params.takerAmountFilled,
-    event.params.fee,
     event.block.timestamp
   )
-}
-
-// Track non-trade position moves (merges, redemptions, P2P transfers).
-// Only updates EXISTING positions — we don't create new UserPosition rows for tokens
-// that have never been traded, to avoid indexing every CTF 1155 holder ever.
-export function handleTransferSingle(event: TransferSingle): void {
-  let from = event.params.from
-  let to = event.params.to
-  let tokenId = event.params.id
-  let value = event.params.value
-  let zero = Address.zero()
-
-  if (!from.equals(zero)) {
-    let fromPos = UserPosition.load(positionId(from, tokenId))
-    if (fromPos != null) {
-      fromPos.amount = fromPos.amount.minus(value)
-      if (fromPos.amount.lt(BigInt.zero())) {
-        fromPos.amount = BigInt.zero()
-      }
-      fromPos.lastUpdatedTimestamp = event.block.timestamp
-      fromPos.save()
-    }
-  }
-
-  if (!to.equals(zero)) {
-    let toPos = UserPosition.load(positionId(to, tokenId))
-    if (toPos != null) {
-      toPos.amount = toPos.amount.plus(value)
-      toPos.lastUpdatedTimestamp = event.block.timestamp
-      toPos.save()
-    }
-  }
 }

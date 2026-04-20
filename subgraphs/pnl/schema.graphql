@@ -1,4 +1,4 @@
-type Account @entity {
+type Account @entity(immutable: false) {
   id: ID!                           # address hex
   tradesQuantity: BigInt!
   buysQuantity: BigInt!
@@ -10,7 +10,7 @@ type Account @entity {
   positions: [UserPosition!]! @derivedFrom(field: "account")
 }
 
-type UserPosition @entity {
+type UserPosition @entity(immutable: false) {
   id: ID!                           # address-tokenId
   account: Account!
   tokenId: BigInt!
@@ -22,7 +22,7 @@ type UserPosition @entity {
   lastUpdatedTimestamp: BigInt!
 }
 
-type MarketStats @entity {
+type Market @entity(immutable: false) {
   id: ID!                           # tokenId decimal string
   tokenId: BigInt!
   fills: BigInt!

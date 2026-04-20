@@ -20,7 +20,7 @@ dataSources:
       entities:
         - UserPosition
         - Account
-        - MarketStats
+        - Market
       abis:
         - name: CtfExchangeV2
           file: ./abis/CtfExchangeV2.json
@@ -42,31 +42,11 @@ dataSources:
       entities:
         - UserPosition
         - Account
-        - MarketStats
+        - Market
       abis:
         - name: NegRiskCtfExchangeV2
           file: ./abis/NegRiskCtfExchangeV2.json
       eventHandlers:
         - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
           handler: handleOrderFilledNegRisk
-      file: ./src/mapping.ts
-  - kind: ethereum
-    name: ConditionalTokens
-    network: matic
-    source:
-      address: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
-      abi: ConditionalTokens
-      startBlock: 84902353
-    mapping:
-      kind: ethereum/events
-      apiVersion: 0.0.7
-      language: wasm/assemblyscript
-      entities:
-        - UserPosition
-      abis:
-        - name: ConditionalTokens
-          file: ./abis/ConditionalTokens.json
-      eventHandlers:
-        - event: TransferSingle(indexed address,indexed address,indexed address,uint256,uint256)
-          handler: handleTransferSingle
       file: ./src/mapping.ts
