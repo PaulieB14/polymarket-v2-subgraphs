@@ -1,5 +1,13 @@
 specVersion: 1.0.0
-description: Polymarket CLOB V2 main — conditions, accounts, markets, trades, orderbook aggregates. Drop-in replacement for V1 main (QmdyCguL…QX8a) with V2 event shapes.
+description: >-
+  Polymarket CLOB V2 main — trades, markets, positions, accounts and orderbook
+  aggregates for the V2 exchanges (CTF Exchange 0xE111…996B and Neg Risk 0xe222…0F59;
+  collateral pUSD, 6-decimals). V2-only: the shared Conditional Tokens contract is indexed
+  from the V2 era, not genesis. Pre-V2 conditions that keep trading on V2 are captured via
+  on-the-fly stub Conditions when their pUSD positions are split, so every V2-traded market
+  maps to its condition without indexing V1 history (stubs carry a null oracle/questionId —
+  recover from the conditionId via Polymarket's Gamma API). positionId→condition derivation
+  is gated to once per (condition, collateral) for indexing speed.
 repository: https://github.com/PaulieB14/polymarket-v2-subgraphs
 indexerHints:
   prune: auto
@@ -12,7 +20,12 @@ dataSources:
     source:
       address: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
       abi: ConditionalTokens
-      startBlock: 28000000
+      # V2-era start (~2026-03, before the exchanges' 84,902,353). The CTF is shared V1↔V2,
+      # but we don't index V1 history: pUSD (V2) positions are all split after this block, and
+      # any pre-V2 condition that trades on V2 is stubbed on-the-fly in handlePositionSplit.
+      # This keeps the subgraph V2-focused and fast; the once-per-market derivation gate
+      # bounds the CTF contract-call cost.
+      startBlock: 84000000
     mapping:
       kind: ethereum/events
       apiVersion: 0.0.7
@@ -26,6 +39,7 @@ dataSources:
         - Collateral
         - Account
         - Global
+        - ConditionCollateralMap
       abis:
         - name: ConditionalTokens
           file: ./abis/ConditionalTokens.json

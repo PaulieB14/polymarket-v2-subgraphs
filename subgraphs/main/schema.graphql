@@ -85,9 +85,9 @@ type Collateral @entity(immutable: false) {
 
 type Condition @entity(immutable: false) {
   id: ID!
-  "Address which can resolve this condition (typically UMA CTF Adapter or Neg Risk Adapter)"
-  oracle: Bytes!
-  questionId: Bytes!
+  "Address which can resolve this condition (typically UMA CTF Adapter or Neg Risk Adapter). NULLABLE: null on stub conditions created from a split/resolution when the ConditionPreparation predates this V2-era subgraph's startBlock (oracle/questionId live only on that event)."
+  oracle: Bytes
+  questionId: Bytes
   outcomeSlotCount: Int!
 
   "Timestamp at which this condition was resolved"
@@ -147,11 +147,22 @@ type Redemption @entity(immutable: true) {
 type MarketData @entity(immutable: false) {
   "ERC-1155 positionId (tokenId) of the CTF outcome asset"
   id: ID!
-  condition: Condition!
+  "Condition this outcome token belongs to. NULLABLE: set when the token's PositionSplit is indexed (CTF is indexed from genesis, so this covers pre-V2 conditions that trade on V2). It stays null only for tokens with no standard base-CTF split under this collateral — e.g. NegRisk positions minted via the NegRisk Adapter or combinatorial/converted positions."
+  condition: Condition
   "Which outcome slot (e.g. 0=YES, 1=NO for binary markets)"
   outcomeIndex: BigInt
   "Latest on-chain orderbook price for this outcome token"
   priceOrderbook: BigDecimal
+}
+
+# Internal bookkeeping: one row per (conditionId-collateralToken-parentCollectionId) tuple
+# whose positionId→condition mapping has already been derived. Lets handlePositionSplit run
+# the CTF getCollectionId/getPositionId derivation ONCE per market+collateral instead of on
+# every split (Polymarket emits millions), which is the key indexing-speed optimization.
+# Not intended for consumer queries.
+type ConditionCollateralMap @entity(immutable: true) {
+  "conditionId-collateralToken-parentCollectionId"
+  id: ID!
 }
 
 # ── Per-user per-market tracking ───────────────────────────────────────────

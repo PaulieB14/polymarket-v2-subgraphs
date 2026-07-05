@@ -33,6 +33,7 @@ import {
   EnrichedOrderFilled,
   Orderbook,
   Builder,
+  ConditionCollateralMap,
 } from "../generated/schema"
 
 const GLOBAL_ID = ""
@@ -48,6 +49,10 @@ const CTF_ADDRESS = Address.fromString("0x4D97DCd97eC945f40cF65F87097ACe5EA04760
 const CTF_EXCHANGE_V2 = Address.fromString("0xe111180000d2663c0091e4f400237545b87b996b")
 const NEG_RISK_EXCHANGE_V2 = Address.fromString("0xe2222d279d744050d28e00520010520000310f59")
 const USDC_E = Address.fromString("0x2791bca1f2de4661ed88a30c99a7a9449aa84174")
+// pUSD (Polymarket USD) — the V2 collateral token. Proxy 0xC011a7E1…E82DFB, 6 decimals
+// (verified on-chain), 1:1 USDC-backed. V2 CTF splits/fills settle in pUSD, so it shows up
+// as the PositionSplit collateralToken from the V2 era onward.
+const PUSD = Address.fromString("0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb")
 const ZERO_BYTES32 = Bytes.fromHexString("0x0000000000000000000000000000000000000000000000000000000000000000")
 
 function isExchange(addr: Address): boolean {
@@ -128,6 +133,10 @@ function getOrCreateCollateral(token: Address): Collateral {
     if (token.equals(USDC_E)) {
       c.name = "USD Coin (PoS)"
       c.symbol = "USDC.e"
+      c.decimals = 6
+    } else if (token.equals(PUSD)) {
+      c.name = "Polymarket USD"
+      c.symbol = "pUSD"
       c.decimals = 6
     } else {
       c.name = "Unknown"
@@ -216,6 +225,25 @@ function getOrCreateMarketProfit(user: Address, conditionId: string): MarketProf
   return p as MarketProfit
 }
 
+// V2-era subgraph: a condition may have been prepared before our startBlock yet still be
+// trading on V2 (its pUSD positions are split/merged/redeemed now). Stub it so its tokens
+// map to a condition. oracle/questionId live only on ConditionPreparation (not indexed here)
+// so they stay null; outcomeSlotCount comes from one cheap CTF view call.
+function loadOrStubCondition(conditionId: Bytes, blockNum: BigInt, blockTs: BigInt): Condition {
+  let id = conditionId.toHexString()
+  let c = Condition.load(id)
+  if (c == null) {
+    c = new Condition(id)
+    let ctInfo = ConditionalTokens.bind(CTF_ADDRESS)
+    let slotRes = ctInfo.try_getOutcomeSlotCount(conditionId)
+    c.outcomeSlotCount = slotRes.reverted ? 0 : slotRes.value.toI32()
+    c.preparedAtBlock = blockNum
+    c.preparedAtTimestamp = blockTs
+    c.save()
+  }
+  return c as Condition
+}
+
 export function handleConditionPreparation(event: ConditionPreparation): void {
   let id = event.params.conditionId.toHexString()
   let c = new Condition(id)
@@ -235,13 +263,17 @@ export function handleConditionPreparation(event: ConditionPreparation): void {
 export function handleConditionResolution(event: ConditionResolution): void {
   let id = event.params.conditionId.toHexString()
   let c = Condition.load(id)
+  let firstSeenAtResolution = false
   if (c == null) {
+    // Condition prepared before this subgraph's V2-only startBlock (its
+    // ConditionPreparation was never indexed). Create it now from the resolution event.
     c = new Condition(id)
     c.oracle = event.params.oracle
     c.questionId = event.params.questionId
     c.outcomeSlotCount = event.params.outcomeSlotCount.toI32()
     c.preparedAtBlock = event.block.number
     c.preparedAtTimestamp = event.block.timestamp
+    firstSeenAtResolution = true
   }
   c.payoutNumerators = event.params.payoutNumerators
   let denom = ZERO_BI
@@ -262,7 +294,10 @@ export function handleConditionResolution(event: ConditionResolution): void {
   c.save()
 
   let g = getOrCreateGlobal(event.block.number, event.block.timestamp)
-  if (g.numOpenConditions > 0) {
+  if (firstSeenAtResolution) {
+    // Never counted as prepared/open, so count it now; it goes straight to closed.
+    g.numConditions = g.numConditions + 1
+  } else if (g.numOpenConditions > 0) {
     g.numOpenConditions = g.numOpenConditions - 1
   }
   g.numClosedConditions = g.numClosedConditions + 1
@@ -271,8 +306,7 @@ export function handleConditionResolution(event: ConditionResolution): void {
 
 export function handlePositionSplit(event: PositionSplit): void {
   let condId = event.params.conditionId.toHexString()
-  let cond = Condition.load(condId)
-  if (cond == null) return
+  loadOrStubCondition(event.params.conditionId, event.block.number, event.block.timestamp)
   let collat = getOrCreateCollateral(event.params.collateralToken)
   collat.save()
   let acct = getOrCreateAccount(event.params.stakeholder, event.block.timestamp)
@@ -289,27 +323,36 @@ export function handlePositionSplit(event: PositionSplit): void {
   s.amount = event.params.amount
   s.save()
 
-  let ct = ConditionalTokens.bind(CTF_ADDRESS)
-  for (let i = 0; i < event.params.partition.length; i++) {
-    let indexSet = event.params.partition[i]
-    let coll_res = ct.try_getCollectionId(event.params.parentCollectionId, event.params.conditionId, indexSet)
-    if (!coll_res.reverted) {
-      let pos_res = ct.try_getPositionId(event.params.collateralToken, coll_res.value)
-      if (!pos_res.reverted) {
-        let tokenId = pos_res.value.toString()
-        let m = getOrCreateMarketData(tokenId)
-        m.condition = condId
-        m.outcomeIndex = BigInt.fromI32(i)
-        m.save()
+  // PERF: positionIds for a given (condition, collateral, parentCollection) are fixed, so
+  // derive the tokenId->condition mapping ONCE — not on every split (Polymarket emits
+  // millions). Without this gate the getCollectionId/getPositionId contract calls dominate
+  // sync time. getPositionId is keccak(collateral++collectionId); getCollectionId is
+  // alt_bn128 EC math, so it stays a contract call — but now runs once per market.
+  let mapKey = condId + "-" + event.params.collateralToken.toHexString() + "-" + event.params.parentCollectionId.toHexString()
+  if (ConditionCollateralMap.load(mapKey) == null) {
+    let ct = ConditionalTokens.bind(CTF_ADDRESS)
+    for (let i = 0; i < event.params.partition.length; i++) {
+      let indexSet = event.params.partition[i]
+      let coll_res = ct.try_getCollectionId(event.params.parentCollectionId, event.params.conditionId, indexSet)
+      if (!coll_res.reverted) {
+        let pos_res = ct.try_getPositionId(event.params.collateralToken, coll_res.value)
+        if (!pos_res.reverted) {
+          let tokenId = pos_res.value.toString()
+          let m = getOrCreateMarketData(tokenId)
+          m.condition = condId
+          m.outcomeIndex = BigInt.fromI32(i)
+          m.save()
+        }
       }
     }
+    let ccm = new ConditionCollateralMap(mapKey)
+    ccm.save()
   }
 }
 
 export function handlePositionsMerge(event: PositionsMerge): void {
   let condId = event.params.conditionId.toHexString()
-  let cond = Condition.load(condId)
-  if (cond == null) return
+  loadOrStubCondition(event.params.conditionId, event.block.number, event.block.timestamp)
   let collat = getOrCreateCollateral(event.params.collateralToken)
   collat.save()
   let acct = getOrCreateAccount(event.params.stakeholder, event.block.timestamp)
@@ -329,8 +372,7 @@ export function handlePositionsMerge(event: PositionsMerge): void {
 
 export function handlePayoutRedemption(event: PayoutRedemption): void {
   let condId = event.params.conditionId.toHexString()
-  let cond = Condition.load(condId)
-  if (cond == null) return
+  loadOrStubCondition(event.params.conditionId, event.block.number, event.block.timestamp)
   let collat = getOrCreateCollateral(event.params.collateralToken)
   collat.save()
   let acct = getOrCreateAccount(event.params.redeemer, event.block.timestamp)
@@ -385,8 +427,13 @@ function applyOrderFilled(
   let makerIsEx = isExchange(maker)
   let takerIsEx = isExchange(taker)
 
+  // Detect brand-new counterparties BEFORE getOrCreate so we can count unique traders.
+  // Exchange contracts themselves are excluded from the trader count.
+  let makerIsNew = Account.load(maker.toHexString()) == null
+  let takerIsNew = Account.load(taker.toHexString()) == null
+
   // Always create Account entity references so foreign keys on OrderFilledEvent
-  // remain valid. We filter on isExchange flags below when updating aggregates.
+  // remain valid. The isExchange flags keep the exchange contracts out of trader counts.
   let makerAcct = getOrCreateAccount(maker, ts)
   makerAcct.save()
   let takerAcct = getOrCreateAccount(taker, ts)
@@ -449,6 +496,8 @@ function applyOrderFilled(
   enriched.save()
 
   let g = getOrCreateGlobal(blockNum, ts)
+  if (makerIsNew && !makerIsEx) { g.numTraders = g.numTraders.plus(ONE_BI) }
+  if (takerIsNew && !takerIsEx) { g.numTraders = g.numTraders.plus(ONE_BI) }
   g.tradesQuantity = g.tradesQuantity.plus(ONE_BI)
   g.collateralVolume = g.collateralVolume.plus(collateralAmount)
   g.scaledCollateralVolume = scale(g.collateralVolume)
@@ -480,9 +529,11 @@ function applyOrderFilled(
   }
   omg.save()
 
-  // Maker-side updates
+  // Maker-side updates. `side` is the maker order's side (the code's convention throughout);
+  // the taker takes the opposite side below. Previously this was hardcoded "Buy".
   let mTxn = new Transaction(eventId + "-m")
-  mTxn.type = "Buy"
+  mTxn.type = "Sell"
+  if (side == SIDE_BUY) { mTxn.type = "Buy" }
   mTxn.timestamp = ts
   mTxn.market = tokenIdStr
   mTxn.user = makerAcct.id

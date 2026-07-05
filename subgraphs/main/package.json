@@ -2,11 +2,11 @@
   "name": "polymarket-v2-main-subgraph",
   "version": "0.1.0",
   "private": true,
-  "description": "Polymarket CLOB V2 main subgraph — conditions + resolution status",
+  "description": "Polymarket CLOB V2 main subgraph — trades, markets, positions, conditions, orderbook aggregates",
   "scripts": {
     "codegen": "graph codegen",
     "build": "graph build",
-    "deploy": "graph deploy --studio polymarket-v2-main",
+    "deploy": "graph deploy polymarket-v-2-main --node https://api.studio.thegraph.com/deploy/",
     "create-local": "graph create --node http://localhost:8020/ polymarket-v2-main",
     "deploy-local": "graph deploy --node http://localhost:8020/ --ipfs http://localhost:5001 polymarket-v2-main",
     "test": "graph test"
