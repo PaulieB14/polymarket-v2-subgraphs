@@ -4,18 +4,24 @@ indexerHints:
 schema:
   file: ./schema.graphql
 dataSources:
+  # Conditional Tokens (Gnosis CTF). Unchanged in V2: the V2 CtfCollateralAdapter
+  # unwraps pUSD and splits/merges/redeems on CTF with USDC.e as collateral.
+  # startBlock = CTF deployment. OI is cumulative and splits are only counted
+  # for conditions registered via ConditionPreparation, so this cannot start later
+  # without losing markets (see README "Start block").
   - kind: ethereum
     name: ConditionalTokens
     network: matic
     source:
       address: "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
       abi: ConditionalTokens
-      startBlock: 28000000
+      startBlock: 4023686
     mapping:
       kind: ethereum/events
       apiVersion: 0.0.7
       language: wasm/assemblyscript
       entities:
+        - Condition
         - MarketOpenInterest
         - OISnapshot
         - GlobalOpenInterest
@@ -23,10 +29,49 @@ dataSources:
         - name: ConditionalTokens
           file: ./abis/ConditionalTokens.json
       eventHandlers:
+        - event: ConditionPreparation(indexed bytes32,indexed address,indexed bytes32,uint256)
+          handler: handleConditionPreparation
         - event: PositionSplit(indexed address,address,indexed bytes32,indexed bytes32,uint256[],uint256)
           handler: handlePositionSplit
         - event: PositionsMerge(indexed address,address,indexed bytes32,indexed bytes32,uint256[],uint256)
           handler: handlePositionsMerge
-        - event: PayoutRedemption(indexed address,address,indexed bytes32,indexed bytes32,uint256[],uint256)
+        - event: PayoutRedemption(indexed address,indexed address,indexed bytes32,bytes32,uint256[],uint256)
           handler: handlePayoutRedemption
       file: ./src/mapping.ts
+  # Neg Risk Adapter. Neg-risk markets use WrappedCollateral (WCOL) at the CTF
+  # level, which the CTF handlers ignore; their OI is tracked here in USDC terms
+  # (V1 and V2: the V2 NegRiskCtfCollateralAdapter routes through this adapter).
+  - kind: ethereum
+    name: NegRiskAdapter
+    network: matic
+    source:
+      address: "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+      abi: NegRiskAdapter
+      startBlock: 50505403
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - Condition
+        - NegRiskEvent
+        - MarketOpenInterest
+        - OISnapshot
+        - GlobalOpenInterest
+      abis:
+        - name: NegRiskAdapter
+          file: ./abis/NegRiskAdapter.json
+      eventHandlers:
+        - event: MarketPrepared(indexed bytes32,indexed address,uint256,bytes)
+          handler: handleMarketPrepared
+        - event: QuestionPrepared(indexed bytes32,indexed bytes32,uint256,bytes)
+          handler: handleQuestionPrepared
+        - event: PositionSplit(indexed address,indexed bytes32,uint256)
+          handler: handleNegRiskPositionSplit
+        - event: PositionsMerge(indexed address,indexed bytes32,uint256)
+          handler: handleNegRiskPositionsMerge
+        - event: PayoutRedemption(indexed address,indexed bytes32,uint256[],uint256)
+          handler: handleNegRiskPayoutRedemption
+        - event: PositionsConverted(indexed address,indexed bytes32,indexed uint256,uint256)
+          handler: handlePositionsConverted
+      file: ./src/negRiskAdapter.ts
