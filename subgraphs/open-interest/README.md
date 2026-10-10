@@ -1,28 +1,60 @@
 # open-interest (V2)
 
-Per-market and global Open Interest tracker. Mirrors the handler logic from [`PaulieB14/polymarket-open-interest`](https://github.com/PaulieB14/polymarket-open-interest).
+Per-market and global Open Interest for Polymarket on Polygon, in USDC (6 decimals).
+OI = collateral locked in outcome tokens: splits add, merges and redemptions subtract,
+and neg-risk conversions subtract the collateral they release.
 
-## Why it lives in the V2 monorepo
+The accounting follows Polymarket's own
+[`oi-subgraph`](https://github.com/Polymarket/polymarket-subgraph/tree/main/oi-subgraph)
+(same gating, same neg-risk conversion math), plus a `parentCollectionId == 0` check and
+this repo's extra fields (counts, hourly snapshots, decimal amounts).
 
-The Conditional Tokens contract is **unchanged** in V2, so this subgraph works across the cutover without modification. It's included here so the full V2 suite deploys as one unit.
+## Data sources
 
-## Data source
+| Contract | Address | Start block | Events |
+|---|---|---|---|
+| Conditional Tokens | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` | 4023686 (CTF deployment) | ConditionPreparation, PositionSplit, PositionsMerge, PayoutRedemption |
+| Neg Risk Adapter | `0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296` | 50505403 (deployment) | MarketPrepared, QuestionPrepared, PositionSplit, PositionsMerge, PayoutRedemption, PositionsConverted |
 
-| Contract | Address | Start block |
-|---|---|---|
-| Conditional Tokens | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` | 28000000 (V1 genesis) |
+## Rules
 
-**Start block is deliberately at V1 genesis**, not the V2 Exchange deploy block. OI is cumulative — starting at V2 would erase ~years of running state and produce wrong totals.
+- **Only binary conditions registered via `ConditionPreparation` count.** That excludes
+  third-party conditions and multi-outcome setups.
+- **CTF events count only when collateral is USDC.e (`0x2791…4174`) and
+  `parentCollectionId == 0`.**
+  - V2's `CtfCollateralAdapter` unwraps pUSD and splits, merges, and redeems on CTF with
+    USDC.e, so V2 flow is covered. pUSD or native USDC split directly on CTF creates
+    different position IDs that the exchanges don't trade. That's ignored, and was a few
+    dollars per day when sampled.
+  - WMATIC and any other token are ignored. Before this fix, one 1-WMATIC split, read as
+    6 decimals, showed up as $1T.
+  - Nested splits, merges, and redemptions move outcome tokens, not collateral.
+- **Neg-risk markets are counted through the NegRiskAdapter, in USDC.** At the CTF level
+  they use WrappedCollateral (`0x3A3B…02E2`), which the CTF handlers skip. Counting WCOL at
+  the CTF level overstates OI, because `convertPositions` mints WCOL and splits for the
+  complementary questions while the converted NO tokens are burned. V2's
+  `NegRiskCtfCollateralAdapter` routes through this adapter, so V2 is covered.
+- **Conversions:** converting `amount` NO tokens of k questions releases `(k-1)*amount`,
+  including the fee that goes to the vault. That's subtracted from global OI and spread
+  evenly over the k conditions. Per-market neg-risk OI is therefore an allocation and can go
+  slightly negative on individual questions. Polymarket's subgraph behaves the same way.
+- **No clamping.** Full history from the CTF deployment means every decrease has a matching
+  earlier increase.
+
+## Start block
+
+It has to be the CTF deployment block. OI is cumulative, and splits only count for
+conditions whose `ConditionPreparation` was indexed. Starting later drops every market
+created before the start block and leaves old markets' redemptions with nothing to subtract
+from.
 
 ## Entities
 
-- `MarketOpenInterest` — per-condition OI with split/merge/redemption counts
-- `OISnapshot` — hourly bucketed snapshots per market
-- `GlobalOpenInterest` — platform-wide rollup
-
-## V2 quirk — adapter masking (not impacting this subgraph, but documented)
-
-In V2, splits flow through `CtfCollateralAdapter` (`0xADa1…9718`) and `NegRiskCtfCollateralAdapter` (`0xAdA2…c6F1`). `PositionSplit.stakeholder` is the adapter, not the EOA. The current schema is **per-market only**, so no unmasking is required. If you later add per-user OI attribution, you'll need to resolve the real user via the pUSD burn `Transfer.from` in the same tx — see [../../contracts.md](../../contracts.md).
+- `Condition`: registered binary conditions
+- `NegRiskEvent`: neg-risk markets (fee, question count)
+- `MarketOpenInterest`: per-condition OI, split, merge, redemption, and conversion counts, `negRisk` flag
+- `OISnapshot`: hourly per-market snapshots
+- `GlobalOpenInterest`: platform total (`id: "global"`)
 
 ## Commands
 
@@ -30,5 +62,6 @@ In V2, splits flow through `CtfCollateralAdapter` (`0xADa1…9718`) and `NegRisk
 npm install
 npm run codegen
 npm run build
-npm run deploy   # edit Studio slug in package.json
+npm test        # matchstick (graph test)
+npm run deploy  # edit Studio slug in package.json
 ```

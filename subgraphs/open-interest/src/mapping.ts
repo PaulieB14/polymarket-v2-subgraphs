@@ -1,181 +1,52 @@
-import { BigDecimal, BigInt, Bytes, ethereum } from "@graphprotocol/graph-ts"
+import { BigInt } from "@graphprotocol/graph-ts"
 import {
+  ConditionPreparation,
   PositionSplit,
   PositionsMerge,
   PayoutRedemption,
 } from "../generated/ConditionalTokens/ConditionalTokens"
-import {
-  MarketOpenInterest,
-  OISnapshot,
-  GlobalOpenInterest,
-} from "../generated/schema"
+import { Condition } from "../generated/schema"
+import { USDC_E, ZERO_BYTES32, KIND_SPLIT, KIND_MERGE, KIND_REDEEM, updateOpenInterest } from "./oi"
 
-let USDC_DECIMALS = 6
-let BD_ZERO = BigDecimal.zero()
-let BI_ZERO = BigInt.zero()
-let BI_ONE = BigInt.fromI32(1)
-let HOUR_SECONDS = BigInt.fromI32(3600)
-
-function toDecimal(amount: BigInt): BigDecimal {
-  let divisor = BigInt.fromI32(10).pow(USDC_DECIMALS as u8).toBigDecimal()
-  return amount.toBigDecimal().div(divisor)
+// Polymarket markets are binary conditions. Registering them here lets the
+// split/merge/redeem handlers skip arbitrary third-party conditions.
+export function handleConditionPreparation(event: ConditionPreparation): void {
+  if (!event.params.outcomeSlotCount.equals(BigInt.fromI32(2))) return
+  let condition = new Condition(event.params.conditionId.toHexString())
+  condition.oracle = event.params.oracle
+  condition.questionId = event.params.questionId
+  condition.createdAtBlock = event.block.number
+  condition.save()
 }
 
-function getOrCreateMarket(
-  conditionId: Bytes,
-  collateralToken: Bytes,
-  event: ethereum.Event
-): MarketOpenInterest {
-  let id = conditionId.toHexString()
-  let market = MarketOpenInterest.load(id)
-  if (market == null) {
-    market = new MarketOpenInterest(id)
-    market.conditionId = conditionId
-    market.collateralToken = collateralToken
-    market.amount = BD_ZERO
-    market.amountRaw = BI_ZERO
-    market.splitCount = BI_ZERO
-    market.mergeCount = BI_ZERO
-    market.redemptionCount = BI_ZERO
-    market.createdAtBlock = event.block.number
-    market.createdAtTimestamp = event.block.timestamp
-    market.lastUpdatedBlock = event.block.number
-    market.lastUpdatedTimestamp = event.block.timestamp
-  }
-  return market as MarketOpenInterest
-}
-
-function getOrCreateGlobal(): GlobalOpenInterest {
-  let global = GlobalOpenInterest.load("global")
-  if (global == null) {
-    global = new GlobalOpenInterest("global")
-    global.amount = BD_ZERO
-    global.amountRaw = BI_ZERO
-    global.marketCount = 0
-    global.lastUpdatedBlock = BI_ZERO
-    global.lastUpdatedTimestamp = BI_ZERO
-  }
-  return global as GlobalOpenInterest
-}
-
-function createOrUpdateHourlySnapshot(
-  market: MarketOpenInterest,
-  event: ethereum.Event
-): void {
-  let hourId = event.block.timestamp.div(HOUR_SECONDS).toString()
-  let snapshotId = market.id + "-" + hourId
-  let snapshot = OISnapshot.load(snapshotId)
-  if (snapshot == null) {
-    snapshot = new OISnapshot(snapshotId)
-    snapshot.market = market.id
-  }
-  snapshot.amount = market.amount
-  snapshot.amountRaw = market.amountRaw
-  snapshot.blockNumber = event.block.number
-  snapshot.timestamp = event.block.timestamp
-  snapshot.save()
+// Shared gate for all three CTF events:
+//  - the condition must be a registered binary condition;
+//  - collateral must be USDC.e (6dp). Neg-risk (WrappedCollateral) is counted via
+//    the NegRiskAdapter; WMATIC and other tokens are not Polymarket collateral;
+//  - parentCollectionId must be zero. A nested split/merge/redeem moves outcome
+//    tokens of another condition, not collateral, so it does not change OI.
+function counts(conditionId: string, collateral: string, parentIsZero: boolean): boolean {
+  if (!parentIsZero) return false
+  if (collateral != USDC_E.toHexString()) return false
+  return Condition.load(conditionId) != null
 }
 
 export function handlePositionSplit(event: PositionSplit): void {
-  let conditionId = event.params.conditionId
-  let amount = event.params.amount
-
-  let market = getOrCreateMarket(
-    conditionId,
-    event.params.collateralToken,
-    event
-  )
-  let isNew = market.splitCount.equals(BI_ZERO)
-  market.amountRaw = market.amountRaw.plus(amount)
-  market.amount = toDecimal(market.amountRaw)
-  market.splitCount = market.splitCount.plus(BI_ONE)
-  market.lastUpdatedBlock = event.block.number
-  market.lastUpdatedTimestamp = event.block.timestamp
-  market.save()
-
-  let global = getOrCreateGlobal()
-  if (isNew) {
-    global.marketCount = global.marketCount + 1
-  }
-  global.amountRaw = global.amountRaw.plus(amount)
-  global.amount = toDecimal(global.amountRaw)
-  global.lastUpdatedBlock = event.block.number
-  global.lastUpdatedTimestamp = event.block.timestamp
-  global.save()
-
-  createOrUpdateHourlySnapshot(market, event)
+  let id = event.params.conditionId.toHexString()
+  if (!counts(id, event.params.collateralToken.toHexString(), event.params.parentCollectionId.equals(ZERO_BYTES32))) return
+  updateOpenInterest(id, event.params.amount, KIND_SPLIT, false, event)
 }
 
 export function handlePositionsMerge(event: PositionsMerge): void {
-  let conditionId = event.params.conditionId
-  let amount = event.params.amount
-
-  let market = getOrCreateMarket(
-    conditionId,
-    event.params.collateralToken,
-    event
-  )
-  let actualSubtracted: BigInt
-  if (market.amountRaw.gt(amount)) {
-    actualSubtracted = amount
-    market.amountRaw = market.amountRaw.minus(amount)
-  } else {
-    actualSubtracted = market.amountRaw
-    market.amountRaw = BI_ZERO
-  }
-  market.amount = toDecimal(market.amountRaw)
-  market.mergeCount = market.mergeCount.plus(BI_ONE)
-  market.lastUpdatedBlock = event.block.number
-  market.lastUpdatedTimestamp = event.block.timestamp
-  market.save()
-
-  let global = getOrCreateGlobal()
-  if (global.amountRaw.gt(actualSubtracted)) {
-    global.amountRaw = global.amountRaw.minus(actualSubtracted)
-  } else {
-    global.amountRaw = BI_ZERO
-  }
-  global.amount = toDecimal(global.amountRaw)
-  global.lastUpdatedBlock = event.block.number
-  global.lastUpdatedTimestamp = event.block.timestamp
-  global.save()
-
-  createOrUpdateHourlySnapshot(market, event)
+  let id = event.params.conditionId.toHexString()
+  if (!counts(id, event.params.collateralToken.toHexString(), event.params.parentCollectionId.equals(ZERO_BYTES32))) return
+  updateOpenInterest(id, event.params.amount.neg(), KIND_MERGE, false, event)
 }
 
+// PayoutRedemption(indexed redeemer, indexed collateralToken, indexed parentCollectionId,
+//                  conditionId, indexSets, payout). conditionId is NOT indexed.
 export function handlePayoutRedemption(event: PayoutRedemption): void {
-  let conditionId = event.params.conditionId
-  let payout = event.params.payout
-
-  let market = getOrCreateMarket(
-    conditionId,
-    event.params.collateralToken,
-    event
-  )
-  let actualSubtracted: BigInt
-  if (market.amountRaw.gt(payout)) {
-    actualSubtracted = payout
-    market.amountRaw = market.amountRaw.minus(payout)
-  } else {
-    actualSubtracted = market.amountRaw
-    market.amountRaw = BI_ZERO
-  }
-  market.amount = toDecimal(market.amountRaw)
-  market.redemptionCount = market.redemptionCount.plus(BI_ONE)
-  market.lastUpdatedBlock = event.block.number
-  market.lastUpdatedTimestamp = event.block.timestamp
-  market.save()
-
-  let global = getOrCreateGlobal()
-  if (global.amountRaw.gt(actualSubtracted)) {
-    global.amountRaw = global.amountRaw.minus(actualSubtracted)
-  } else {
-    global.amountRaw = BI_ZERO
-  }
-  global.amount = toDecimal(global.amountRaw)
-  global.lastUpdatedBlock = event.block.number
-  global.lastUpdatedTimestamp = event.block.timestamp
-  global.save()
-
-  createOrUpdateHourlySnapshot(market, event)
+  let id = event.params.conditionId.toHexString()
+  if (!counts(id, event.params.collateralToken.toHexString(), event.params.parentCollectionId.equals(ZERO_BYTES32))) return
+  updateOpenInterest(id, event.params.payout.neg(), KIND_REDEEM, false, event)
 }

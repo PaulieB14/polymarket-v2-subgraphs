@@ -1,12 +1,34 @@
+"""
+Binary (2-outcome) condition registered on the CTF. Splits/merges/redemptions
+for conditions not registered here are ignored (same rule as Polymarket's
+official oi-subgraph).
+"""
+type Condition @entity(immutable: true) {
+  id: ID!                                    # conditionId
+  oracle: Bytes!
+  questionId: Bytes!
+  createdAtBlock: BigInt!
+}
+
+"Neg-risk market (NegRiskAdapter marketId)"
+type NegRiskEvent @entity(immutable: false) {
+  id: ID!                                    # marketId
+  feeBps: BigInt!
+  questionCount: Int!
+}
+
 type MarketOpenInterest @entity(immutable: false) {
   id: ID!                                    # conditionId
   conditionId: Bytes!
+  "USDC.e for both standard and neg-risk markets (neg-risk OI is tracked in USDC terms via the NegRiskAdapter)"
   collateralToken: Bytes!
-  amount: BigDecimal!                        # normalized to USDC 6dp
+  negRisk: Boolean!
+  amount: BigDecimal!                        # USDC, 6 decimals
   amountRaw: BigInt!
   splitCount: BigInt!
   mergeCount: BigInt!
   redemptionCount: BigInt!
+  conversionCount: BigInt!
   createdAtBlock: BigInt!
   createdAtTimestamp: BigInt!
   lastUpdatedBlock: BigInt!
