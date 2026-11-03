@@ -157,7 +157,7 @@ describe("NegRiskAdapter", () => {
     )
   })
 
-  test("conversion of 3 NO positions releases 2x amount, split across the 3 conditions", () => {
+  test("conversion of 3 NO positions releases 2x amount globally, mints YES on the complement", () => {
     let marketId = Bytes.fromHexString("0xabababababababababababababababababababababababababababababababab00")
     let mp = changetype<MarketPrepared>(newMockEvent())
     mp.parameters = [
@@ -207,11 +207,27 @@ describe("NegRiskAdapter", () => {
       p("amount", u(9000000)),
     ]
     handlePositionsConverted(cv)
-    // released = 2 * 9 = 18 USDC; 6 per converted condition
+    // released = 2 * 9 = 18 USDC globally; converted questions keep their YES,
+    // complement question 3 gains 9 minted YES
     assert.fieldEquals("GlobalOpenInterest", "global", "amountRaw", "102000000")
-    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "amountRaw", "24000000")
-    assert.fieldEquals("MarketOpenInterest", conds[2].toHexString(), "amountRaw", "24000000")
-    assert.fieldEquals("MarketOpenInterest", conds[3].toHexString(), "amountRaw", "30000000")
+    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "amountRaw", "30000000")
+    assert.fieldEquals("MarketOpenInterest", conds[2].toHexString(), "amountRaw", "30000000")
+    assert.fieldEquals("MarketOpenInterest", conds[3].toHexString(), "amountRaw", "39000000")
+
+    // k=1: NO on q0 -> YES on q1..q3, no collateral released; previously a no-op,
+    // which left the later YES redemptions on q1..q3 driving them negative
+    let cv1 = changetype<PositionsConverted>(newMockEvent())
+    cv1.parameters = [
+      p("stakeholder", ethereum.Value.fromAddress(USER)),
+      p("marketId", ethereum.Value.fromFixedBytes(marketId)),
+      p("indexSet", u(0x1)),
+      p("amount", u(5000000)),
+    ]
+    handlePositionsConverted(cv1)
+    assert.fieldEquals("GlobalOpenInterest", "global", "amountRaw", "102000000")
+    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "amountRaw", "30000000")
+    assert.fieldEquals("MarketOpenInterest", conds[1].toHexString(), "amountRaw", "35000000")
+    assert.fieldEquals("MarketOpenInterest", conds[3].toHexString(), "amountRaw", "44000000")
     assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "negRisk", "true")
   })
 })

@@ -72,39 +72,39 @@ export function handleNegRiskPayoutRedemption(event: PayoutRedemption): void {
   updateOpenInterest(id, event.params.payout.neg(), KIND_REDEEM, true, event)
 }
 
-// Converting `amount` NO tokens of k questions into YES tokens of the others
-// releases (k-1)*amount of collateral (minus fee, which goes to the vault, also
-// leaving OI). Spread evenly across the k converted conditions. Same math as
-// Polymarket's oi-subgraph.
+// convertPositions(marketId, indexSet, amount): the caller's NO tokens on the k
+// questions in indexSet are burned, and for every question NOT in indexSet the
+// adapter mints WCOL and splits `amount` (YES to the caller, NO burned). So per
+// market, the complementary questions gain `amount` of outstanding YES, and the
+// converted questions keep their YES supply unchanged. Globally, (k-1)*amount of
+// collateral is released (fee included), same as Polymarket's oi-subgraph.
+// Previous version spread the release over the k NO-side questions and never
+// credited the complementary questions, which shifted OI between sibling
+// questions (one sibling hugely positive, the other hugely negative).
 export function handlePositionsConverted(event: PositionsConverted): void {
   let e = NegRiskEvent.load(event.params.marketId.toHexString())
   if (e == null) return
 
   let indexSet = event.params.indexSet
-  let ids: string[] = []
-  let n = e.questionCount
-  for (let i = 0; i < n; i++) {
-    if (indexSet.bitAnd(BigInt.fromI32(1).leftShift(i as u8)).gt(BigInt.zero())) {
-      let qid = negRiskQuestionId(event.params.marketId, i as u8)
-      ids.push(binaryConditionId(NEG_RISK_ADAPTER, qid).toHexString())
-    }
-  }
-  let noCount = ids.length
-  if (noCount <= 1) return
-
-  let multiplier = BigInt.fromI32(noCount - 1)
-  let divisor = BigInt.fromI32(noCount)
-  // released = fee*(k-1) + (amount-fee)*(k-1) = amount*(k-1); split into the same
-  // two parts as Polymarket so per-market rounding matches theirs exactly.
   let amount = event.params.amount
-  let fee = amount.times(e.feeBps).div(FEE_DENOMINATOR)
-  let net = amount.minus(fee)
-  let feeReleased = fee.times(multiplier)
-  let userReleased = net.times(multiplier)
-  let perMarket = feeReleased.div(divisor).plus(userReleased.div(divisor)).neg()
-
-  for (let i = 0; i < noCount; i++) {
-    updateMarket(ids[i], perMarket, KIND_CONVERT, true, event)
+  let n = e.questionCount
+  let noCount = 0
+  let yesIds: string[] = []
+  for (let i = 0; i < n; i++) {
+    let qid = negRiskQuestionId(event.params.marketId, i as u8)
+    let cid = binaryConditionId(NEG_RISK_ADAPTER, qid).toHexString()
+    if (indexSet.bitAnd(BigInt.fromI32(1).leftShift(i as u8)).gt(BigInt.zero())) noCount++
+    else yesIds.push(cid)
   }
-  updateGlobal(feeReleased.plus(userReleased).neg(), event)
+  if (noCount == 0 || amount.isZero()) return
+
+  for (let i = 0; i < yesIds.length; i++) {
+    updateMarket(yesIds[i], amount, KIND_CONVERT, true, event)
+  }
+  if (noCount > 1) {
+    // same rounding as Polymarket: fee and net parts released separately
+    let fee = amount.times(e.feeBps).div(FEE_DENOMINATOR)
+    let multiplier = BigInt.fromI32(noCount - 1)
+    updateGlobal(fee.times(multiplier).plus(amount.minus(fee).times(multiplier)).neg(), event)
+  }
 }

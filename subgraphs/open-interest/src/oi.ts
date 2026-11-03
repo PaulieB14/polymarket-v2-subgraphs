@@ -84,6 +84,9 @@ function snapshot(market: MarketOpenInterest, event: ethereum.Event): void {
  * the per-market sum (Polymarket's oi-subgraph does not clamp either).
  */
 export function updateMarket(conditionId: string, delta: BigInt, kind: i32, negRisk: boolean, event: ethereum.Event): void {
+  // A zero-payout redemption (redeeming the losing side) on a market we have never
+  // seen must not create a market: those were ~4M phantom markets in marketCount.
+  if (delta.isZero() && MarketOpenInterest.load(conditionId) == null) return
   let market = getOrCreateMarket(conditionId, negRisk, event)
   market.amountRaw = market.amountRaw.plus(delta)
   market.amount = toDecimal(market.amountRaw)
