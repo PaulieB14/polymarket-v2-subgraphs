@@ -23,6 +23,8 @@ export const KIND_SPLIT = 0
 export const KIND_MERGE = 1
 export const KIND_REDEEM = 2
 export const KIND_CONVERT = 3
+// settlement of conversion bookkeeping on OutcomeReported: moves OI, bumps no counter
+export const KIND_RESOLVE = 4
 
 function toDecimal(amount: BigInt): BigDecimal {
   return amount.toBigDecimal().div(BigInt.fromI32(10).pow(USDC_DECIMALS).toBigDecimal())
@@ -93,7 +95,7 @@ export function updateMarket(conditionId: string, delta: BigInt, kind: i32, negR
   if (kind == KIND_SPLIT) market.splitCount = market.splitCount.plus(BI_ONE)
   else if (kind == KIND_MERGE) market.mergeCount = market.mergeCount.plus(BI_ONE)
   else if (kind == KIND_REDEEM) market.redemptionCount = market.redemptionCount.plus(BI_ONE)
-  else market.conversionCount = market.conversionCount.plus(BI_ONE)
+  else if (kind == KIND_CONVERT) market.conversionCount = market.conversionCount.plus(BI_ONE)
   market.lastUpdatedBlock = event.block.number
   market.lastUpdatedTimestamp = event.block.timestamp
   market.save()

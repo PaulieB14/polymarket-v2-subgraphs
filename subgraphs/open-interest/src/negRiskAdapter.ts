@@ -6,14 +6,16 @@ import {
   PositionsMerge,
   PayoutRedemption,
   PositionsConverted,
+  OutcomeReported,
 } from "../generated/NegRiskAdapter/NegRiskAdapter"
-import { Condition, NegRiskEvent } from "../generated/schema"
+import { Condition, NegRiskEvent, NegRiskQuestion } from "../generated/schema"
 import {
   NEG_RISK_ADAPTER,
   KIND_SPLIT,
   KIND_MERGE,
   KIND_REDEEM,
   KIND_CONVERT,
+  KIND_RESOLVE,
   updateOpenInterest,
   updateMarket,
   updateGlobal,
@@ -72,15 +74,20 @@ export function handleNegRiskPayoutRedemption(event: PayoutRedemption): void {
   updateOpenInterest(id, event.params.payout.neg(), KIND_REDEEM, true, event)
 }
 
-// convertPositions(marketId, indexSet, amount): the caller's NO tokens on the k
-// questions in indexSet are burned, and for every question NOT in indexSet the
-// adapter mints WCOL and splits `amount` (YES to the caller, NO burned). So per
-// market, the complementary questions gain `amount` of outstanding YES, and the
-// converted questions keep their YES supply unchanged. Globally, (k-1)*amount of
-// collateral is released (fee included), same as Polymarket's oi-subgraph.
-// Previous version spread the release over the k NO-side questions and never
-// credited the complementary questions, which shifted OI between sibling
-// questions (one sibling hugely positive, the other hugely negative).
+// convertPositions(marketId, indexSet, amount) on an n-question event:
+//  - the caller's `amount` NO on each of the k questions in indexSet is burned
+//    (sent to the adapter's burn address, never redeemed);
+//  - `amount` YES is minted on each of the n-k other questions (fee included: the
+//    fee share of the YES goes to the vault and is still redeemable);
+//  - (k-1)*amount of collateral leaves the system (global OI, unchanged rule).
+// Per question we therefore:
+//  - debit `amount` on each converted question (its burned NO will never be paid),
+//    unless that question was already reported YES (its NO was already worthless);
+//  - credit `amount` on each other question, unless it was already reported NO
+//    (YES minted on a lost question is worthless from the start).
+// What was debited/credited is tracked on NegRiskQuestion and settled in
+// handleOutcomeReported, so every question returns to ~0 once all winning
+// positions are redeemed, and sum(per-question) == global for the event.
 export function handlePositionsConverted(event: PositionsConverted): void {
   let e = NegRiskEvent.load(event.params.marketId.toHexString())
   if (e == null) return
@@ -88,18 +95,37 @@ export function handlePositionsConverted(event: PositionsConverted): void {
   let indexSet = event.params.indexSet
   let amount = event.params.amount
   let n = e.questionCount
-  let noCount = 0
+  let noIds: string[] = []
+  let noQids: Bytes[] = []
   let yesIds: string[] = []
+  let yesQids: Bytes[] = []
   for (let i = 0; i < n; i++) {
     let qid = negRiskQuestionId(event.params.marketId, i as u8)
     let cid = binaryConditionId(NEG_RISK_ADAPTER, qid).toHexString()
-    if (indexSet.bitAnd(BigInt.fromI32(1).leftShift(i as u8)).gt(BigInt.zero())) noCount++
-    else yesIds.push(cid)
+    if (indexSet.bitAnd(BigInt.fromI32(1).leftShift(i as u8)).gt(BigInt.zero())) {
+      noIds.push(cid)
+      noQids.push(qid)
+    } else {
+      yesIds.push(cid)
+      yesQids.push(qid)
+    }
   }
+  let noCount = noIds.length
   if (noCount == 0 || amount.isZero()) return
 
   for (let i = 0; i < yesIds.length; i++) {
+    let q = getOrCreateQuestion(yesIds[i], event.params.marketId, yesQids[i])
+    if (q.outcome == OUTCOME_NO) continue
+    q.mintedRaw = q.mintedRaw.plus(amount)
+    q.save()
     updateMarket(yesIds[i], amount, KIND_CONVERT, true, event)
+  }
+  for (let i = 0; i < noIds.length; i++) {
+    let q = getOrCreateQuestion(noIds[i], event.params.marketId, noQids[i])
+    if (q.outcome == OUTCOME_YES) continue
+    q.burnedRaw = q.burnedRaw.plus(amount)
+    q.save()
+    updateMarket(noIds[i], amount.neg(), KIND_CONVERT, true, event)
   }
   if (noCount > 1) {
     // same rounding as Polymarket: fee and net parts released separately
@@ -107,4 +133,45 @@ export function handlePositionsConverted(event: PositionsConverted): void {
     let multiplier = BigInt.fromI32(noCount - 1)
     updateGlobal(fee.times(multiplier).plus(amount.minus(fee).times(multiplier)).neg(), event)
   }
+}
+
+// OutcomeReported(marketId, questionId, outcome): settle conversion bookkeeping.
+// Reported NO: YES minted on this question by conversions is worthless -> remove it.
+// Reported YES: NO burned on this question by conversions was worthless -> give the
+// debit back. Global OI is not touched (no collateral moves here).
+export function handleOutcomeReported(event: OutcomeReported): void {
+  if (NegRiskEvent.load(event.params.marketId.toHexString()) == null) return
+  let qid = event.params.questionId
+  let cid = binaryConditionId(NEG_RISK_ADAPTER, qid).toHexString()
+  let q = getOrCreateQuestion(cid, event.params.marketId, qid)
+  if (q.outcome != OUTCOME_UNRESOLVED) return
+  q.outcome = event.params.outcome ? OUTCOME_YES : OUTCOME_NO
+  q.reportedAtBlock = event.block.number
+  let delta = BigInt.zero()
+  if (q.outcome == OUTCOME_NO) {
+    delta = q.mintedRaw.neg()
+    q.mintedRaw = BigInt.zero()
+  } else {
+    delta = q.burnedRaw
+    q.burnedRaw = BigInt.zero()
+  }
+  q.save()
+  if (!delta.isZero()) updateMarket(cid, delta, KIND_RESOLVE, true, event)
+}
+
+const OUTCOME_UNRESOLVED = 0
+const OUTCOME_YES = 1
+const OUTCOME_NO = 2
+
+function getOrCreateQuestion(cid: string, marketId: Bytes, questionId: Bytes): NegRiskQuestion {
+  let q = NegRiskQuestion.load(cid)
+  if (q == null) {
+    q = new NegRiskQuestion(cid)
+    q.marketId = marketId
+    q.questionId = questionId
+    q.outcome = OUTCOME_UNRESOLVED
+    q.mintedRaw = BigInt.zero()
+    q.burnedRaw = BigInt.zero()
+  }
+  return q as NegRiskQuestion
 }
