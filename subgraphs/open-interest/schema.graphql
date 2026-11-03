@@ -17,6 +17,25 @@ type NegRiskEvent @entity(immutable: false) {
   questionCount: Int!
 }
 
+"""
+Per-question conversion bookkeeping for a neg-risk question (id = conditionId).
+convertPositions burns the caller's NO on the converted questions and mints YES on
+the others. mintedRaw / burnedRaw are what those conversions added to / took from
+this question's OI and are settled when the adapter reports the outcome:
+reported NO -> the minted YES is worthless and is removed; reported YES -> the
+burned NO was worthless, so the debit is given back.
+"""
+type NegRiskQuestion @entity(immutable: false) {
+  id: ID!                                    # conditionId
+  marketId: Bytes!
+  questionId: Bytes!
+  "0 = unresolved, 1 = reported YES, 2 = reported NO"
+  outcome: Int!
+  mintedRaw: BigInt!
+  burnedRaw: BigInt!
+  reportedAtBlock: BigInt
+}
+
 type MarketOpenInterest @entity(immutable: false) {
   id: ID!                                    # conditionId
   conditionId: Bytes!

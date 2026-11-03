@@ -5,3 +5,8 @@ generated/
 .DS_Store
 .env
 .env.local
+
+# open-interest: large real-data negRisk fixtures/replays are generated on demand
+# (see subgraphs/open-interest/scripts/negrisk-replay/README.md)
+subgraphs/open-interest/tests/fixtures/negrisk-real/large/
+subgraphs/open-interest/tests/real-large-*.test.ts

@@ -55,6 +55,7 @@ dataSources:
       entities:
         - Condition
         - NegRiskEvent
+        - NegRiskQuestion
         - MarketOpenInterest
         - OISnapshot
         - GlobalOpenInterest
@@ -74,4 +75,6 @@ dataSources:
           handler: handleNegRiskPayoutRedemption
         - event: PositionsConverted(indexed address,indexed bytes32,indexed uint256,uint256)
           handler: handlePositionsConverted
+        - event: OutcomeReported(indexed bytes32,indexed bytes32,bool)
+          handler: handleOutcomeReported
       file: ./src/negRiskAdapter.ts
