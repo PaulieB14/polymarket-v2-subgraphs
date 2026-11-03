@@ -207,11 +207,11 @@ describe("NegRiskAdapter", () => {
       p("amount", u(9000000)),
     ]
     handlePositionsConverted(cv)
-    // released = 2 * 9 = 18 USDC globally; converted questions keep their YES,
+    // released = 2 * 9 = 18 USDC globally; converted questions lose the 9 burned NO,
     // complement question 3 gains 9 minted YES
     assert.fieldEquals("GlobalOpenInterest", "global", "amountRaw", "102000000")
-    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "amountRaw", "30000000")
-    assert.fieldEquals("MarketOpenInterest", conds[2].toHexString(), "amountRaw", "30000000")
+    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "amountRaw", "21000000")
+    assert.fieldEquals("MarketOpenInterest", conds[2].toHexString(), "amountRaw", "21000000")
     assert.fieldEquals("MarketOpenInterest", conds[3].toHexString(), "amountRaw", "39000000")
 
     // k=1: NO on q0 -> YES on q1..q3, no collateral released; previously a no-op,
@@ -225,8 +225,8 @@ describe("NegRiskAdapter", () => {
     ]
     handlePositionsConverted(cv1)
     assert.fieldEquals("GlobalOpenInterest", "global", "amountRaw", "102000000")
-    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "amountRaw", "30000000")
-    assert.fieldEquals("MarketOpenInterest", conds[1].toHexString(), "amountRaw", "35000000")
+    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "amountRaw", "16000000")
+    assert.fieldEquals("MarketOpenInterest", conds[1].toHexString(), "amountRaw", "26000000")
     assert.fieldEquals("MarketOpenInterest", conds[3].toHexString(), "amountRaw", "44000000")
     assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "negRisk", "true")
   })
