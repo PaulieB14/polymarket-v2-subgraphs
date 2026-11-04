@@ -32,10 +32,9 @@ dataSources:
       language: wasm/assemblyscript
       entities:
         - Condition
-        - Split
-        - Merge
-        - Redemption
         - MarketData
+        - MarketProfit
+        - MarketName
         - Collateral
         - Account
         - Global
@@ -68,26 +67,22 @@ dataSources:
       apiVersion: 0.0.7
       language: wasm/assemblyscript
       entities:
-        - OrderFilledEvent
-        - OrdersMatchedEvent
-        - EnrichedOrderFilled
-        - Transaction
+        - Trade
         - Orderbook
-        - OrdersMatchedGlobal
         - Global
         - Account
+        - Condition
         - MarketPosition
-        - MarketProfit
         - MarketData
         - Builder
       abis:
         - name: CtfExchangeV2
           file: ./abis/CtfExchangeV2.json
       eventHandlers:
+        # OrdersMatched is not indexed: the taker-summary OrderFilled (taker = exchange)
+        # carries the same amounts plus fee/builder, 1:1 per match (verified on-chain).
         - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
           handler: handleOrderFilled
-        - event: OrdersMatched(indexed bytes32,indexed address,uint8,uint256,uint256,uint256)
-          handler: handleOrdersMatched
       file: ./src/mapping.ts
 
   - kind: ethereum
@@ -102,24 +97,71 @@ dataSources:
       apiVersion: 0.0.7
       language: wasm/assemblyscript
       entities:
-        - OrderFilledEvent
-        - OrdersMatchedEvent
-        - EnrichedOrderFilled
-        - Transaction
+        - Trade
         - Orderbook
-        - OrdersMatchedGlobal
         - Global
         - Account
+        - Condition
         - MarketPosition
-        - MarketProfit
         - MarketData
         - Builder
       abis:
         - name: NegRiskCtfExchangeV2
           file: ./abis/NegRiskCtfExchangeV2.json
       eventHandlers:
+        # OrdersMatched is not indexed: the taker-summary OrderFilled (taker = exchange)
+        # carries the same amounts plus fee/builder, 1:1 per match (verified on-chain).
         - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
           handler: handleOrderFilledNegRisk
-        - event: OrdersMatched(indexed bytes32,indexed address,uint8,uint256,uint256,uint256)
-          handler: handleOrdersMatchedNegRisk
+      file: ./src/mapping.ts
+
+  # ── On-chain market names ──
+  # UMA CTF Adapter (normal markets; deployed 74,797,879 — indexed from the V2-era start).
+  # The negRisk UMA adapter 0x69c47De9… is intentionally NOT indexed (duplicate names under
+  # a different id). Crypto Up/Down 5/15-min markets are prepared directly on CTF with no text.
+  - kind: ethereum
+    name: UmaCtfAdapter
+    network: matic
+    source:
+      address: "0x65070BE91477460D8A7AeEb94ef92fe056C2f2A7"
+      abi: UmaCtfAdapter
+      startBlock: 84000000
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - MarketName
+        - Condition
+      abis:
+        - name: UmaCtfAdapter
+          file: ./abis/UmaCtfAdapter.json
+      eventHandlers:
+        - event: QuestionInitialized(indexed bytes32,indexed uint256,indexed address,bytes,address,uint256,uint256)
+          handler: handleQuestionInitialized
+      file: ./src/mapping.ts
+
+  - kind: ethereum
+    name: NegRiskAdapter
+    network: matic
+    source:
+      address: "0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"
+      abi: NegRiskAdapter
+      startBlock: 84000000
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - MarketName
+        - NegRiskEvent
+        - Condition
+      abis:
+        - name: NegRiskAdapter
+          file: ./abis/NegRiskAdapter.json
+      eventHandlers:
+        - event: MarketPrepared(indexed bytes32,indexed address,uint256,bytes)
+          handler: handleMarketPrepared
+        - event: QuestionPrepared(indexed bytes32,indexed bytes32,uint256,bytes)
+          handler: handleQuestionPrepared
       file: ./src/mapping.ts

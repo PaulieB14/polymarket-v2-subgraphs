@@ -14,6 +14,8 @@ the V2 exchanges plus the shared Conditional Tokens contract.
 | Conditional Tokens (CTF) | `0x4D97DCd97eC945f40cF65F87097ACe5EA0476045` | 84000000 |
 | CTF Exchange V2 | `0xE111180000d2663C0091e4f400237545B87B996B` | 84902353 |
 | Neg Risk CTF Exchange V2 | `0xe2222d279d744050d28e00520010520000310F59` | 84902353 |
+| UMA CTF Adapter (names) | `0x65070BE91477460D8A7AeEb94ef92fe056C2f2A7` | 84000000 |
+| Neg Risk Adapter (names) | `0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296` | 84000000 |
 
 Addresses match the [official V2 contracts](https://docs.polymarket.com/resources/contracts).
 Network: Polygon (matic).
@@ -60,35 +62,74 @@ Grafting onto the old deployment was rejected: it would inherit data built with 
   `getPositionId` is `keccak256(collateral ++ collectionId)`; `getCollectionId` is
   alt_bn128 EC math, so it remains a contract call (now called rarely, under the gate).
 
+## Volume semantics (fixed)
+
+Each V2 match emits one `OrderFilled` per maker order, plus one **taker summary**
+`OrderFilled` whose `taker` is the exchange contract, plus one `OrdersMatched` (1:1 with the
+taker summary — verified on-chain). Each `OrderFilled` describes **one order's fill from
+its owner's (`maker`) perspective**.
+
+- `Global` / `Condition` / `Orderbook` volume and trade counts come from the taker summary
+  only: **one match = one trade, volume = taker-side collateral notional**. The previous
+  version summed every fill (~2.1× on a real 20-block replay).
+- Per-wallet stats (`Account`, `MarketPosition`) are attributed to the `maker` field of
+  every fill, i.e. each order owner once, with *their own* token/side/amounts. This is also
+  correct for MINT/MERGE matches, where maker and taker hold different outcome tokens (the
+  old code booked the taker as trading the maker's token).
+- The exchange contracts are never `Account`s, never traders, never on leaderboards.
+- Fees are summed over every fill (maker and taker fees are distinct, not duplicates).
+- `OrdersMatched` is not indexed (redundant with the taker summary).
+
+## Names
+
+`MarketName` (immutable, id = questionId) stores the on-chain title only (≤200 chars),
+creator (UMA), `gammaId` and `kind` (`uma` / `negrisk`); `Condition.title` / `Condition.name`
+are filled whichever event arrives first. Sources: UMA adapter `QuestionInitialized`
+(`title: … , description:`) and NegRiskAdapter `QuestionPrepared` (`question: …`), plus
+`MarketPrepared` → `NegRiskEvent` (event-level title). The negRisk UMA adapter
+`0x69c47De9…` is deliberately not indexed (duplicates). **Crypto Up or Down 5/15-min
+markets** (oracle `0x58e1745b…`, prepared directly on CTF) have no on-chain text, so their
+title is null — join Gamma by conditionId for those. Stub (pre-startBlock) conditions also
+have no name.
+
 ## Entities
 
-- `Global`, `OrdersMatchedGlobal` — platform-wide singleton aggregates (volume, trades,
-  fees, unique traders, condition counts)
-- `Account` — per-address: trade count, volume, realized profit, timestamps
-- `Collateral` — token metadata (pUSD, USDC.e)
-- `Condition` — per conditionId: outcomeSlotCount, oracle*, questionId*, resolution status,
-  payouts (*null on stub conditions)
-- `Split`, `Merge`, `Redemption` — CTF position lifecycle events
-- `MarketData` — the ERC-1155 tokenId → `Condition` mapping, plus latest orderbook price
-- `MarketPosition` — per-user per-token position (quantity/value bought/sold, net, fees)
-- `MarketProfit` — per-user per-condition realized profit
-- `Transaction` — per-fill maker/taker trade records
-- `OrderFilledEvent`, `OrdersMatchedEvent`, `EnrichedOrderFilled` — raw + enriched exchange events
-- `Orderbook` — per-token orderbook aggregates
-- `Builder` — V2 builder-code attribution (order count, volume, fees)
-- `ConditionCollateralMap` — internal derivation-gate bookkeeping (not for querying)
+- `Global` — singleton: matches, taker-side volume, fees, fills, unique traders, condition,
+  split/merge/redemption counters
+- `Account` — per wallet: own fills, volume, fees, split/merge/redemption counts, profit
+- `Collateral` — pUSD / USDC.e
+- `Condition` — oracle, questionId, title, resolution, per-market trades/volume/fees and
+  split/merge/redemption counters
+- `MarketName`, `NegRiskEvent` — on-chain names
+- `MarketData` — ERC-1155 tokenId → `Condition`, latest price
+- `MarketPosition`, `MarketProfit` — per-wallet positions / realized profit
+- `Trade` — one lean row per match (taker order)
+- `Orderbook` — per-token aggregates (taker side)
+- `Builder` — builder-code attribution
+- `ConditionCollateralMap` — internal
+
+Removed: `OrdersMatchedGlobal`, `Transaction`, `OrderFilledEvent`, `OrdersMatchedEvent`,
+`EnrichedOrderFilled`, `Split`, `Merge`, `Redemption` (now counters).
+
+## Tests
+
+`graph test` is unsupported on some hosts; run the Matchstick binary directly from this
+directory. `tests/replay-real.test.ts` replays every fill from 20 real blocks and checks
+totals against `OrdersMatched`; `tests/names-real.test.ts` checks the parser on real logs
+against Gamma titles.
 
 ## Events handled
 
 CTF: `ConditionPreparation`, `ConditionResolution`, `PositionSplit`, `PositionsMerge`,
 `PayoutRedemption`.
 Exchanges (V2 shapes): `OrderFilled(bytes32,address,address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)`,
-`OrdersMatched(bytes32,address,uint8,uint256,uint256,uint256)`.
+(`OrdersMatched` deliberately not indexed — see Volume semantics).
+Names: UMA adapter `QuestionInitialized`; NegRiskAdapter `QuestionPrepared`, `MarketPrepared`.
 
 ## Not indexed (by design)
 
 - **UMA oracle lifecycle** (proposal/dispute/settlement) — belongs in a dedicated resolution subgraph
-- **NegRisk Adapter** (`0xd91E80cF…35296`) position minting/conversion — would give NegRisk
+- **NegRisk Adapter** (`0xd91E80cF…35296`) position minting/conversion (only its name events are indexed) — would give NegRisk
   tokens a mapped condition; currently they carry a null `condition`
 - **Combos suite** (PositionManager, BinaryModule, CombinatorialModule, third Exchange) —
   a separate V2 contract family

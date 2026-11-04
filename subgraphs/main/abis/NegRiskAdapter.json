@@ -1,0 +1,64 @@
+[
+ {
+  "type": "event",
+  "name": "QuestionPrepared",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "marketId",
+    "type": "bytes32",
+    "indexed": true,
+    "internalType": "bytes32"
+   },
+   {
+    "name": "questionId",
+    "type": "bytes32",
+    "indexed": true,
+    "internalType": "bytes32"
+   },
+   {
+    "name": "index",
+    "type": "uint256",
+    "indexed": false,
+    "internalType": "uint256"
+   },
+   {
+    "name": "data",
+    "type": "bytes",
+    "indexed": false,
+    "internalType": "bytes"
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "MarketPrepared",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "marketId",
+    "type": "bytes32",
+    "indexed": true,
+    "internalType": "bytes32"
+   },
+   {
+    "name": "oracle",
+    "type": "address",
+    "indexed": true,
+    "internalType": "address"
+   },
+   {
+    "name": "feeBips",
+    "type": "uint256",
+    "indexed": false,
+    "internalType": "uint256"
+   },
+   {
+    "name": "data",
+    "type": "bytes",
+    "indexed": false,
+    "internalType": "bytes"
+   }
+  ]
+ }
+]
