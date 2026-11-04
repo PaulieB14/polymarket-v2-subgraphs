@@ -1,4 +1,4 @@
-import { BigInt, BigDecimal, Address, Bytes } from "@graphprotocol/graph-ts"
+import { BigInt, BigDecimal, Address, Bytes, crypto, ethereum } from "@graphprotocol/graph-ts"
 import {
   ConditionPreparation,
   ConditionResolution,
@@ -7,34 +7,26 @@ import {
   PayoutRedemption,
   ConditionalTokens,
 } from "../generated/ConditionalTokens/ConditionalTokens"
-import {
-  OrderFilled as CtfOrderFilled,
-  OrdersMatched as CtfOrdersMatched,
-} from "../generated/CtfExchangeV2/CtfExchangeV2"
-import {
-  OrderFilled as NegOrderFilled,
-  OrdersMatched as NegOrdersMatched,
-} from "../generated/NegRiskCtfExchangeV2/NegRiskCtfExchangeV2"
+import { OrderFilled as CtfOrderFilled } from "../generated/CtfExchangeV2/CtfExchangeV2"
+import { OrderFilled as NegOrderFilled } from "../generated/NegRiskCtfExchangeV2/NegRiskCtfExchangeV2"
+import { QuestionInitialized } from "../generated/UmaCtfAdapter/UmaCtfAdapter"
+import { QuestionPrepared, MarketPrepared } from "../generated/NegRiskAdapter/NegRiskAdapter"
 import {
   Global,
-  OrdersMatchedGlobal,
   Account,
   Collateral,
   Condition,
-  Split,
-  Merge,
-  Redemption,
   MarketData,
   MarketPosition,
   MarketProfit,
-  Transaction,
-  OrderFilledEvent,
-  OrdersMatchedEvent,
-  EnrichedOrderFilled,
+  Trade,
   Orderbook,
   Builder,
   ConditionCollateralMap,
+  MarketName,
+  NegRiskEvent,
 } from "../generated/schema"
+import { extractTitle, extractGammaId, bytesToText } from "./names"
 
 const GLOBAL_ID = ""
 const USDC_UNIT = BigDecimal.fromString("1000000")
@@ -42,25 +34,33 @@ const ZERO_BD = BigDecimal.zero()
 const ZERO_BI = BigInt.zero()
 const ONE_BI = BigInt.fromI32(1)
 const SIDE_BUY: i32 = 0
-const SIDE_SELL: i32 = 1
 const DAY_SECONDS = BigInt.fromI32(86400)
 
 const CTF_ADDRESS = Address.fromString("0x4D97DCd97eC945f40cF65F87097ACe5EA0476045")
 const CTF_EXCHANGE_V2 = Address.fromString("0xe111180000d2663c0091e4f400237545b87b996b")
 const NEG_RISK_EXCHANGE_V2 = Address.fromString("0xe2222d279d744050d28e00520010520000310f59")
+export const UMA_ADAPTER = Address.fromString("0x65070be91477460d8a7aeeb94ef92fe056c2f2a7")
+export const NEG_RISK_ADAPTER = Address.fromString("0xd91e80cf2e7be2e162c6513ced06f1dd0da35296")
 const USDC_E = Address.fromString("0x2791bca1f2de4661ed88a30c99a7a9449aa84174")
-// pUSD (Polymarket USD) — the V2 collateral token. Proxy 0xC011a7E1…E82DFB, 6 decimals
-// (verified on-chain), 1:1 USDC-backed. V2 CTF splits/fills settle in pUSD, so it shows up
-// as the PositionSplit collateralToken from the V2 era onward.
 const PUSD = Address.fromString("0xc011a7e12a19f7b1f670d46f03b03f3342e82dfb")
 const ZERO_BYTES32 = Bytes.fromHexString("0x0000000000000000000000000000000000000000000000000000000000000000")
 
-function isExchange(addr: Address): boolean {
+export function isExchange(addr: Address): boolean {
   return addr.equals(CTF_EXCHANGE_V2) || addr.equals(NEG_RISK_EXCHANGE_V2)
 }
 
 function scale(amount: BigInt): BigDecimal {
   return amount.toBigDecimal().div(USDC_UNIT)
+}
+
+// CTF conditionId = keccak256(abi.encodePacked(oracle, questionId, outcomeSlotCount))
+export function conditionIdFor(oracle: Address, questionId: Bytes, slots: i32): string {
+  let packed = new Bytes(20 + 32 + 32)
+  for (let i = 0; i < 20; i++) packed[i] = oracle[i]
+  for (let i = 0; i < 32; i++) packed[20 + i] = questionId[i]
+  for (let i = 0; i < 31; i++) packed[52 + i] = 0
+  packed[83] = slots as u8
+  return Bytes.fromByteArray(crypto.keccak256(packed)).toHexString()
 }
 
 function getOrCreateGlobal(block_num: BigInt, block_ts: BigInt): Global {
@@ -82,29 +82,17 @@ function getOrCreateGlobal(block_num: BigInt, block_ts: BigInt): Global {
     g.scaledCollateralBuyVolume = ZERO_BD
     g.collateralSellVolume = ZERO_BI
     g.scaledCollateralSellVolume = ZERO_BD
-    g.lastUpdatedBlock = block_num
-    g.lastUpdatedTimestamp = block_ts
+    g.orderFillsQuantity = ZERO_BI
+    g.splitCount = ZERO_BI
+    g.splitVolume = ZERO_BI
+    g.mergeCount = ZERO_BI
+    g.mergeVolume = ZERO_BI
+    g.redemptionCount = ZERO_BI
+    g.redemptionPayout = ZERO_BI
   }
   g.lastUpdatedBlock = block_num
   g.lastUpdatedTimestamp = block_ts
   return g as Global
-}
-
-function getOrCreateOrdersMatchedGlobal(): OrdersMatchedGlobal {
-  let g = OrdersMatchedGlobal.load(GLOBAL_ID)
-  if (g == null) {
-    g = new OrdersMatchedGlobal(GLOBAL_ID)
-    g.tradesQuantity = ZERO_BI
-    g.buysQuantity = ZERO_BI
-    g.sellsQuantity = ZERO_BI
-    g.collateralVolume = ZERO_BD
-    g.scaledCollateralVolume = ZERO_BD
-    g.collateralBuyVolume = ZERO_BD
-    g.scaledCollateralBuyVolume = ZERO_BD
-    g.collateralSellVolume = ZERO_BD
-    g.scaledCollateralSellVolume = ZERO_BD
-  }
-  return g as OrdersMatchedGlobal
 }
 
 function getOrCreateAccount(addr: Address, ts: BigInt): Account {
@@ -113,16 +101,41 @@ function getOrCreateAccount(addr: Address, ts: BigInt): Account {
   if (a == null) {
     a = new Account(id)
     a.creationTimestamp = ts
-    a.lastSeenTimestamp = ts
     a.lastTradedTimestamp = ZERO_BI
     a.numTrades = ZERO_BI
     a.collateralVolume = ZERO_BI
     a.scaledCollateralVolume = ZERO_BD
+    a.feesPaid = ZERO_BI
+    a.splitCount = ZERO_BI
+    a.mergeCount = ZERO_BI
+    a.redemptionCount = ZERO_BI
     a.profit = ZERO_BI
     a.scaledProfit = ZERO_BD
   }
   a.lastSeenTimestamp = ts
   return a as Account
+}
+
+function initConditionStats(c: Condition): void {
+  c.tradesQuantity = ZERO_BI
+  c.collateralVolume = ZERO_BI
+  c.scaledCollateralVolume = ZERO_BD
+  c.fees = ZERO_BI
+  c.splitCount = ZERO_BI
+  c.splitVolume = ZERO_BI
+  c.mergeCount = ZERO_BI
+  c.mergeVolume = ZERO_BI
+  c.redemptionCount = ZERO_BI
+  c.redemptionPayout = ZERO_BI
+}
+
+function attachName(c: Condition): void {
+  if (c.questionId === null || c.title !== null) return
+  let n = MarketName.load((c.questionId as Bytes).toHexString())
+  if (n != null) {
+    c.title = n.title
+    c.name = n.id
+  }
 }
 
 function getOrCreateCollateral(token: Address): Collateral {
@@ -225,10 +238,7 @@ function getOrCreateMarketProfit(user: Address, conditionId: string): MarketProf
   return p as MarketProfit
 }
 
-// V2-era subgraph: a condition may have been prepared before our startBlock yet still be
-// trading on V2 (its pUSD positions are split/merged/redeemed now). Stub it so its tokens
-// map to a condition. oracle/questionId live only on ConditionPreparation (not indexed here)
-// so they stay null; outcomeSlotCount comes from one cheap CTF view call.
+// Condition prepared before startBlock but active now: stub it (oracle/questionId null).
 function loadOrStubCondition(conditionId: Bytes, blockNum: BigInt, blockTs: BigInt): Condition {
   let id = conditionId.toHexString()
   let c = Condition.load(id)
@@ -239,19 +249,24 @@ function loadOrStubCondition(conditionId: Bytes, blockNum: BigInt, blockTs: BigI
     c.outcomeSlotCount = slotRes.reverted ? 0 : slotRes.value.toI32()
     c.preparedAtBlock = blockNum
     c.preparedAtTimestamp = blockTs
-    c.save()
+    initConditionStats(c)
   }
   return c as Condition
 }
 
 export function handleConditionPreparation(event: ConditionPreparation): void {
   let id = event.params.conditionId.toHexString()
-  let c = new Condition(id)
+  let c = Condition.load(id)
+  if (c == null) {
+    c = new Condition(id)
+    initConditionStats(c)
+  }
   c.oracle = event.params.oracle
   c.questionId = event.params.questionId
   c.outcomeSlotCount = event.params.outcomeSlotCount.toI32()
   c.preparedAtBlock = event.block.number
   c.preparedAtTimestamp = event.block.timestamp
+  attachName(c)
   c.save()
 
   let g = getOrCreateGlobal(event.block.number, event.block.timestamp)
@@ -265,16 +280,18 @@ export function handleConditionResolution(event: ConditionResolution): void {
   let c = Condition.load(id)
   let firstSeenAtResolution = false
   if (c == null) {
-    // Condition prepared before this subgraph's V2-only startBlock (its
-    // ConditionPreparation was never indexed). Create it now from the resolution event.
     c = new Condition(id)
-    c.oracle = event.params.oracle
-    c.questionId = event.params.questionId
     c.outcomeSlotCount = event.params.outcomeSlotCount.toI32()
     c.preparedAtBlock = event.block.number
     c.preparedAtTimestamp = event.block.timestamp
+    initConditionStats(c)
     firstSeenAtResolution = true
   }
+  if (c.oracle === null) {
+    c.oracle = event.params.oracle
+    c.questionId = event.params.questionId
+  }
+  attachName(c)
   c.payoutNumerators = event.params.payoutNumerators
   let denom = ZERO_BI
   for (let i = 0; i < event.params.payoutNumerators.length; i++) {
@@ -295,7 +312,6 @@ export function handleConditionResolution(event: ConditionResolution): void {
 
   let g = getOrCreateGlobal(event.block.number, event.block.timestamp)
   if (firstSeenAtResolution) {
-    // Never counted as prepared/open, so count it now; it goes straight to closed.
     g.numConditions = g.numConditions + 1
   } else if (g.numOpenConditions > 0) {
     g.numOpenConditions = g.numOpenConditions - 1
@@ -305,29 +321,21 @@ export function handleConditionResolution(event: ConditionResolution): void {
 }
 
 export function handlePositionSplit(event: PositionSplit): void {
-  let condId = event.params.conditionId.toHexString()
-  loadOrStubCondition(event.params.conditionId, event.block.number, event.block.timestamp)
-  let collat = getOrCreateCollateral(event.params.collateralToken)
-  collat.save()
+  let c = loadOrStubCondition(event.params.conditionId, event.block.number, event.block.timestamp)
+  c.splitCount = c.splitCount.plus(ONE_BI)
+  c.splitVolume = c.splitVolume.plus(event.params.amount)
+  c.save()
+  let condId = c.id
+  getOrCreateCollateral(event.params.collateralToken).save()
   let acct = getOrCreateAccount(event.params.stakeholder, event.block.timestamp)
+  acct.splitCount = acct.splitCount.plus(ONE_BI)
   acct.save()
+  let g = getOrCreateGlobal(event.block.number, event.block.timestamp)
+  g.splitCount = g.splitCount.plus(ONE_BI)
+  g.splitVolume = g.splitVolume.plus(event.params.amount)
+  g.save()
 
-  let id = event.transaction.hash.toHexString() + "-" + event.logIndex.toString()
-  let s = new Split(id)
-  s.timestamp = event.block.timestamp
-  s.stakeholder = acct.id
-  s.collateralToken = collat.id
-  s.parentCollectionId = event.params.parentCollectionId
-  s.condition = condId
-  s.partition = event.params.partition
-  s.amount = event.params.amount
-  s.save()
-
-  // PERF: positionIds for a given (condition, collateral, parentCollection) are fixed, so
-  // derive the tokenId->condition mapping ONCE — not on every split (Polymarket emits
-  // millions). Without this gate the getCollectionId/getPositionId contract calls dominate
-  // sync time. getPositionId is keccak(collateral++collectionId); getCollectionId is
-  // alt_bn128 EC math, so it stays a contract call — but now runs once per market.
+  // positionIds are fixed per (condition, collateral, parent): derive once.
   let mapKey = condId + "-" + event.params.collateralToken.toHexString() + "-" + event.params.parentCollectionId.toHexString()
   if (ConditionCollateralMap.load(mapKey) == null) {
     let ct = ConditionalTokens.bind(CTF_ADDRESS)
@@ -337,71 +345,63 @@ export function handlePositionSplit(event: PositionSplit): void {
       if (!coll_res.reverted) {
         let pos_res = ct.try_getPositionId(event.params.collateralToken, coll_res.value)
         if (!pos_res.reverted) {
-          let tokenId = pos_res.value.toString()
-          let m = getOrCreateMarketData(tokenId)
+          let m = getOrCreateMarketData(pos_res.value.toString())
           m.condition = condId
           m.outcomeIndex = BigInt.fromI32(i)
           m.save()
         }
       }
     }
-    let ccm = new ConditionCollateralMap(mapKey)
-    ccm.save()
+    new ConditionCollateralMap(mapKey).save()
   }
 }
 
 export function handlePositionsMerge(event: PositionsMerge): void {
-  let condId = event.params.conditionId.toHexString()
-  loadOrStubCondition(event.params.conditionId, event.block.number, event.block.timestamp)
-  let collat = getOrCreateCollateral(event.params.collateralToken)
-  collat.save()
+  let c = loadOrStubCondition(event.params.conditionId, event.block.number, event.block.timestamp)
+  c.mergeCount = c.mergeCount.plus(ONE_BI)
+  c.mergeVolume = c.mergeVolume.plus(event.params.amount)
+  c.save()
+  getOrCreateCollateral(event.params.collateralToken).save()
   let acct = getOrCreateAccount(event.params.stakeholder, event.block.timestamp)
+  acct.mergeCount = acct.mergeCount.plus(ONE_BI)
   acct.save()
-
-  let id = event.transaction.hash.toHexString() + "-" + event.logIndex.toString()
-  let m = new Merge(id)
-  m.timestamp = event.block.timestamp
-  m.stakeholder = acct.id
-  m.collateralToken = collat.id
-  m.parentCollectionId = event.params.parentCollectionId
-  m.condition = condId
-  m.partition = event.params.partition
-  m.amount = event.params.amount
-  m.save()
+  let g = getOrCreateGlobal(event.block.number, event.block.timestamp)
+  g.mergeCount = g.mergeCount.plus(ONE_BI)
+  g.mergeVolume = g.mergeVolume.plus(event.params.amount)
+  g.save()
 }
 
 export function handlePayoutRedemption(event: PayoutRedemption): void {
-  let condId = event.params.conditionId.toHexString()
-  loadOrStubCondition(event.params.conditionId, event.block.number, event.block.timestamp)
-  let collat = getOrCreateCollateral(event.params.collateralToken)
-  collat.save()
+  let c = loadOrStubCondition(event.params.conditionId, event.block.number, event.block.timestamp)
+  c.redemptionCount = c.redemptionCount.plus(ONE_BI)
+  c.redemptionPayout = c.redemptionPayout.plus(event.params.payout)
+  c.save()
+  getOrCreateCollateral(event.params.collateralToken).save()
   let acct = getOrCreateAccount(event.params.redeemer, event.block.timestamp)
+  acct.redemptionCount = acct.redemptionCount.plus(ONE_BI)
   acct.profit = acct.profit.plus(event.params.payout)
   acct.scaledProfit = scale(acct.profit)
   acct.save()
 
-  let mp = getOrCreateMarketProfit(event.params.redeemer, condId)
+  let mp = getOrCreateMarketProfit(event.params.redeemer, c.id)
   mp.profit = mp.profit.plus(event.params.payout)
   mp.scaledProfit = scale(mp.profit)
   mp.save()
 
-  let id = event.transaction.hash.toHexString() + "-" + event.logIndex.toString()
-  let r = new Redemption(id)
-  r.timestamp = event.block.timestamp
-  r.redeemer = acct.id
-  r.collateralToken = collat.id
-  r.parentCollectionId = event.params.parentCollectionId
-  r.condition = condId
-  r.indexSets = event.params.indexSets
-  r.payout = event.params.payout
-  r.save()
+  let g = getOrCreateGlobal(event.block.number, event.block.timestamp)
+  g.redemptionCount = g.redemptionCount.plus(ONE_BI)
+  g.redemptionPayout = g.redemptionPayout.plus(event.params.payout)
+  g.save()
 }
 
+// Every OrderFilled describes ONE order's fill from its owner's (`maker`) perspective:
+//  - maker-order fills: maker = resting order owner, taker = taker-order owner
+//  - taker summary fill: maker = taker-order owner, taker = the exchange contract
+// So: attribute per-account stats to `maker` only (each order once, with its own token and
+// side — correct even for MINT/MERGE matches where the two sides hold different tokens), and
+// count platform/market/token volume only from the taker summary (once per match).
 function applyOrderFilled(
-  txHash: Bytes,
-  logIndex: BigInt,
-  ts: BigInt,
-  blockNum: BigInt,
+  event: ethereum.Event,
   orderHash: Bytes,
   maker: Address,
   taker: Address,
@@ -411,8 +411,9 @@ function applyOrderFilled(
   takerAmountFilled: BigInt,
   fee: BigInt,
   builderCode: Bytes,
-  metadata: Bytes
+  negRisk: boolean
 ): void {
+  let ts = event.block.timestamp
   let collateralAmount = takerAmountFilled
   let tokenAmount = makerAmountFilled
   if (side == SIDE_BUY) {
@@ -424,178 +425,108 @@ function applyOrderFilled(
     price = collateralAmount.toBigDecimal().div(tokenAmount.toBigDecimal())
   }
   let tokenIdStr = tokenId.toString()
-  let makerIsEx = isExchange(maker)
-  let takerIsEx = isExchange(taker)
+  let isTakerSummary = isExchange(taker)
 
-  // Detect brand-new counterparties BEFORE getOrCreate so we can count unique traders.
-  // Exchange contracts themselves are excluded from the trader count.
-  let makerIsNew = Account.load(maker.toHexString()) == null
-  let takerIsNew = Account.load(taker.toHexString()) == null
-
-  // Always create Account entity references so foreign keys on OrderFilledEvent
-  // remain valid. The isExchange flags keep the exchange contracts out of trader counts.
-  let makerAcct = getOrCreateAccount(maker, ts)
-  makerAcct.save()
-  let takerAcct = getOrCreateAccount(taker, ts)
-  takerAcct.save()
-
-  let eventId = txHash.toHexString() + "-" + logIndex.toString()
-  let raw = new OrderFilledEvent(eventId)
-  raw.transactionHash = txHash
-  raw.timestamp = ts
-  raw.orderHash = orderHash
-  raw.maker = makerAcct.id
-  raw.taker = takerAcct.id
-  let assetMaker = "0"
-  let assetTaker = tokenIdStr
-  if (side == SIDE_SELL) {
-    assetMaker = tokenIdStr
-    assetTaker = "0"
-  }
-  raw.makerAssetId = assetMaker
-  raw.takerAssetId = assetTaker
-  raw.makerAmountFilled = makerAmountFilled
-  raw.takerAmountFilled = takerAmountFilled
-  raw.fee = fee
-  raw.builder = builderCode
-  raw.metadata = metadata
-  raw.save()
-
-  let ob = getOrCreateOrderbook(tokenIdStr, ts)
-  ob.tradesQuantity = ob.tradesQuantity.plus(ONE_BI)
-  ob.collateralVolume = ob.collateralVolume.plus(collateralAmount)
-  ob.scaledCollateralVolume = scale(ob.collateralVolume)
-  if (side == SIDE_BUY) {
-    ob.buysQuantity = ob.buysQuantity.plus(ONE_BI)
-    ob.collateralBuyVolume = ob.collateralBuyVolume.plus(collateralAmount)
-    ob.scaledCollateralBuyVolume = scale(ob.collateralBuyVolume)
-  } else {
-    ob.sellsQuantity = ob.sellsQuantity.plus(ONE_BI)
-    ob.collateralSellVolume = ob.collateralSellVolume.plus(collateralAmount)
-    ob.scaledCollateralSellVolume = scale(ob.collateralSellVolume)
-  }
-  ob.lastPrice = price
-  ob.save()
+  let g = getOrCreateGlobal(event.block.number, ts)
+  g.orderFillsQuantity = g.orderFillsQuantity.plus(ONE_BI)
+  g.collateralFees = g.collateralFees.plus(fee)
+  g.scaledCollateralFees = scale(g.collateralFees)
 
   let md = getOrCreateMarketData(tokenIdStr)
   md.priceOrderbook = price
   md.save()
 
-  let enrichedSide = "Sell"
-  if (side == SIDE_BUY) { enrichedSide = "Buy" }
-  let enriched = new EnrichedOrderFilled(eventId)
-  enriched.transactionHash = txHash
-  enriched.timestamp = ts
-  enriched.maker = makerAcct.id
-  enriched.taker = takerAcct.id
-  enriched.orderHash = orderHash
-  enriched.market = tokenIdStr
-  enriched.side = enrichedSide
-  enriched.size = tokenAmount
-  enriched.price = price
-  enriched.save()
+  // ── per-account (order owner) ──
+  if (!isExchange(maker)) {
+    let isNew = Account.load(maker.toHexString()) == null
+    if (isNew) g.numTraders = g.numTraders.plus(ONE_BI)
+    let acct = getOrCreateAccount(maker, ts)
+    acct.numTrades = acct.numTrades.plus(ONE_BI)
+    acct.collateralVolume = acct.collateralVolume.plus(collateralAmount)
+    acct.scaledCollateralVolume = scale(acct.collateralVolume)
+    acct.feesPaid = acct.feesPaid.plus(fee)
+    acct.lastTradedTimestamp = ts
+    acct.save()
 
-  let g = getOrCreateGlobal(blockNum, ts)
-  if (makerIsNew && !makerIsEx) { g.numTraders = g.numTraders.plus(ONE_BI) }
-  if (takerIsNew && !takerIsEx) { g.numTraders = g.numTraders.plus(ONE_BI) }
-  g.tradesQuantity = g.tradesQuantity.plus(ONE_BI)
-  g.collateralVolume = g.collateralVolume.plus(collateralAmount)
-  g.scaledCollateralVolume = scale(g.collateralVolume)
-  g.collateralFees = g.collateralFees.plus(fee)
-  g.scaledCollateralFees = scale(g.collateralFees)
-  if (side == SIDE_BUY) {
-    g.buysQuantity = g.buysQuantity.plus(ONE_BI)
-    g.collateralBuyVolume = g.collateralBuyVolume.plus(collateralAmount)
-    g.scaledCollateralBuyVolume = scale(g.collateralBuyVolume)
-  } else {
-    g.sellsQuantity = g.sellsQuantity.plus(ONE_BI)
-    g.collateralSellVolume = g.collateralSellVolume.plus(collateralAmount)
-    g.scaledCollateralSellVolume = scale(g.collateralSellVolume)
+    let mp = getOrCreateMarketPosition(maker, tokenIdStr)
+    if (side == SIDE_BUY) {
+      mp.quantityBought = mp.quantityBought.plus(tokenAmount)
+      mp.valueBought = mp.valueBought.plus(collateralAmount)
+    } else {
+      mp.quantitySold = mp.quantitySold.plus(tokenAmount)
+      mp.valueSold = mp.valueSold.plus(collateralAmount)
+    }
+    mp.netQuantity = mp.quantityBought.minus(mp.quantitySold)
+    mp.netValue = mp.valueBought.minus(mp.valueSold)
+    mp.feesPaid = mp.feesPaid.plus(fee)
+    mp.save()
+  }
+
+  // ── once per match ──
+  if (isTakerSummary) {
+    g.tradesQuantity = g.tradesQuantity.plus(ONE_BI)
+    g.collateralVolume = g.collateralVolume.plus(collateralAmount)
+    g.scaledCollateralVolume = scale(g.collateralVolume)
+
+    let ob = getOrCreateOrderbook(tokenIdStr, ts)
+    ob.tradesQuantity = ob.tradesQuantity.plus(ONE_BI)
+    ob.collateralVolume = ob.collateralVolume.plus(collateralAmount)
+    ob.scaledCollateralVolume = scale(ob.collateralVolume)
+    if (side == SIDE_BUY) {
+      g.buysQuantity = g.buysQuantity.plus(ONE_BI)
+      g.collateralBuyVolume = g.collateralBuyVolume.plus(collateralAmount)
+      g.scaledCollateralBuyVolume = scale(g.collateralBuyVolume)
+      ob.buysQuantity = ob.buysQuantity.plus(ONE_BI)
+      ob.collateralBuyVolume = ob.collateralBuyVolume.plus(collateralAmount)
+      ob.scaledCollateralBuyVolume = scale(ob.collateralBuyVolume)
+    } else {
+      g.sellsQuantity = g.sellsQuantity.plus(ONE_BI)
+      g.collateralSellVolume = g.collateralSellVolume.plus(collateralAmount)
+      g.scaledCollateralSellVolume = scale(g.collateralSellVolume)
+      ob.sellsQuantity = ob.sellsQuantity.plus(ONE_BI)
+      ob.collateralSellVolume = ob.collateralSellVolume.plus(collateralAmount)
+      ob.scaledCollateralSellVolume = scale(ob.collateralSellVolume)
+    }
+    ob.lastPrice = price
+    ob.save()
+
+    let t = new Trade(event.transaction.hash.toHexString() + "-" + event.logIndex.toString())
+    t.transactionHash = event.transaction.hash
+    t.timestamp = ts
+    t.blockNumber = event.block.number
+    t.orderHash = orderHash
+    t.taker = maker.toHexString()
+    t.market = tokenIdStr
+    t.side = side == SIDE_BUY ? "Buy" : "Sell"
+    t.collateralAmount = collateralAmount
+    t.tokenAmount = tokenAmount
+    t.price = price
+    t.fee = fee
+    if (!builderCode.equals(ZERO_BYTES32)) t.builder = builderCode
+    t.negRisk = negRisk
+
+    if (md.condition !== null) {
+      let c = Condition.load(md.condition as string)
+      if (c != null) {
+        c.tradesQuantity = c.tradesQuantity.plus(ONE_BI)
+        c.collateralVolume = c.collateralVolume.plus(collateralAmount)
+        c.scaledCollateralVolume = scale(c.collateralVolume)
+        c.fees = c.fees.plus(fee)
+        c.save()
+        t.condition = c.id
+      }
+    }
+    t.save()
+  } else if (md.condition !== null && fee.gt(ZERO_BI)) {
+    // maker fees still belong to the market
+    let c = Condition.load(md.condition as string)
+    if (c != null) {
+      c.fees = c.fees.plus(fee)
+      c.save()
+    }
   }
   g.save()
 
-  let omg = getOrCreateOrdersMatchedGlobal()
-  omg.tradesQuantity = omg.tradesQuantity.plus(ONE_BI)
-  omg.collateralVolume = omg.collateralVolume.plus(collateralAmount.toBigDecimal())
-  omg.scaledCollateralVolume = omg.collateralVolume.div(USDC_UNIT)
-  if (side == SIDE_BUY) {
-    omg.buysQuantity = omg.buysQuantity.plus(ONE_BI)
-    omg.collateralBuyVolume = omg.collateralBuyVolume.plus(collateralAmount.toBigDecimal())
-    omg.scaledCollateralBuyVolume = omg.collateralBuyVolume.div(USDC_UNIT)
-  } else {
-    omg.sellsQuantity = omg.sellsQuantity.plus(ONE_BI)
-    omg.collateralSellVolume = omg.collateralSellVolume.plus(collateralAmount.toBigDecimal())
-    omg.scaledCollateralSellVolume = omg.collateralSellVolume.div(USDC_UNIT)
-  }
-  omg.save()
-
-  // Maker-side updates. `side` is the maker order's side (the code's convention throughout);
-  // the taker takes the opposite side below. Previously this was hardcoded "Buy".
-  let mTxn = new Transaction(eventId + "-m")
-  mTxn.type = "Sell"
-  if (side == SIDE_BUY) { mTxn.type = "Buy" }
-  mTxn.timestamp = ts
-  mTxn.market = tokenIdStr
-  mTxn.user = makerAcct.id
-  mTxn.tradeAmount = collateralAmount
-  mTxn.feeAmount = fee
-  mTxn.outcomeIndex = ZERO_BI
-  mTxn.outcomeTokensAmount = tokenAmount
-  mTxn.save()
-
-  let mp = getOrCreateMarketPosition(maker, tokenIdStr)
-  if (side == SIDE_BUY) {
-    mp.quantityBought = mp.quantityBought.plus(tokenAmount)
-    mp.valueBought = mp.valueBought.plus(collateralAmount)
-  } else {
-    mp.quantitySold = mp.quantitySold.plus(tokenAmount)
-    mp.valueSold = mp.valueSold.plus(collateralAmount)
-  }
-  mp.netQuantity = mp.quantityBought.minus(mp.quantitySold)
-  mp.netValue = mp.valueBought.minus(mp.valueSold)
-  mp.feesPaid = mp.feesPaid.plus(fee)
-  mp.save()
-
-  makerAcct.numTrades = makerAcct.numTrades.plus(ONE_BI)
-  makerAcct.collateralVolume = makerAcct.collateralVolume.plus(collateralAmount)
-  makerAcct.scaledCollateralVolume = scale(makerAcct.collateralVolume)
-  makerAcct.lastTradedTimestamp = ts
-  makerAcct.save()
-
-  // Taker-side updates — taker sees opposite side of the trade
-  let takerBuy = false
-  if (side == SIDE_SELL) { takerBuy = true }
-  let tTxn = new Transaction(eventId + "-t")
-  tTxn.type = "Sell"
-  if (takerBuy) { tTxn.type = "Buy" }
-  tTxn.timestamp = ts
-  tTxn.market = tokenIdStr
-  tTxn.user = takerAcct.id
-  tTxn.tradeAmount = collateralAmount
-  tTxn.feeAmount = ZERO_BI
-  tTxn.outcomeIndex = ZERO_BI
-  tTxn.outcomeTokensAmount = tokenAmount
-  tTxn.save()
-
-  let mpT = getOrCreateMarketPosition(taker, tokenIdStr)
-  if (takerBuy) {
-    mpT.quantityBought = mpT.quantityBought.plus(tokenAmount)
-    mpT.valueBought = mpT.valueBought.plus(collateralAmount)
-  } else {
-    mpT.quantitySold = mpT.quantitySold.plus(tokenAmount)
-    mpT.valueSold = mpT.valueSold.plus(collateralAmount)
-  }
-  mpT.netQuantity = mpT.quantityBought.minus(mpT.quantitySold)
-  mpT.netValue = mpT.valueBought.minus(mpT.valueSold)
-  mpT.save()
-
-  takerAcct.numTrades = takerAcct.numTrades.plus(ONE_BI)
-  takerAcct.collateralVolume = takerAcct.collateralVolume.plus(collateralAmount)
-  takerAcct.scaledCollateralVolume = scale(takerAcct.collateralVolume)
-  takerAcct.lastTradedTimestamp = ts
-  takerAcct.save()
-
-  // Builder attribution
   let b = getOrCreateBuilder(builderCode, ts)
   if (b != null) {
     let bb = b as Builder
@@ -608,88 +539,69 @@ function applyOrderFilled(
   }
 }
 
-function applyOrdersMatched(
-  txHash: Bytes,
-  logIndex: BigInt,
-  ts: BigInt,
-  side: i32,
-  tokenId: BigInt,
-  makerAmountFilled: BigInt,
-  takerAmountFilled: BigInt
-): void {
-  let id = txHash.toHexString() + "-" + logIndex.toString()
-  let om = new OrdersMatchedEvent(id)
-  om.timestamp = ts
-  if (side == SIDE_BUY) {
-    om.makerAssetID = ZERO_BI
-    om.takerAssetID = tokenId
-  } else {
-    om.makerAssetID = tokenId
-    om.takerAssetID = ZERO_BI
-  }
-  om.makerAmountFilled = makerAmountFilled
-  om.takerAmountFilled = takerAmountFilled
-  om.save()
-}
-
 export function handleOrderFilled(event: CtfOrderFilled): void {
-  applyOrderFilled(
-    event.transaction.hash,
-    event.logIndex,
-    event.block.timestamp,
-    event.block.number,
-    event.params.orderHash,
-    event.params.maker,
-    event.params.taker,
-    event.params.side,
-    event.params.tokenId,
-    event.params.makerAmountFilled,
-    event.params.takerAmountFilled,
-    event.params.fee,
-    event.params.builder,
-    event.params.metadata
-  )
+  let p = event.params
+  applyOrderFilled(event, p.orderHash, p.maker, p.taker, p.side, p.tokenId,
+    p.makerAmountFilled, p.takerAmountFilled, p.fee, p.builder, false)
 }
 
 export function handleOrderFilledNegRisk(event: NegOrderFilled): void {
-  applyOrderFilled(
-    event.transaction.hash,
-    event.logIndex,
-    event.block.timestamp,
-    event.block.number,
-    event.params.orderHash,
-    event.params.maker,
-    event.params.taker,
-    event.params.side,
-    event.params.tokenId,
-    event.params.makerAmountFilled,
-    event.params.takerAmountFilled,
-    event.params.fee,
-    event.params.builder,
-    event.params.metadata
-  )
+  let p = event.params
+  applyOrderFilled(event, p.orderHash, p.maker, p.taker, p.side, p.tokenId,
+    p.makerAmountFilled, p.takerAmountFilled, p.fee, p.builder, true)
 }
 
-export function handleOrdersMatched(event: CtfOrdersMatched): void {
-  applyOrdersMatched(
-    event.transaction.hash,
-    event.logIndex,
-    event.block.timestamp,
-    event.params.side,
-    event.params.tokenId,
-    event.params.makerAmountFilled,
-    event.params.takerAmountFilled
-  )
+// ── Names ──────────────────────────────────────────────────────────────────
+
+function saveName(
+  questionId: Bytes, title: string, text: string, creator: Bytes | null, kind: string,
+  negRiskEvent: string | null, oracle: Address, block: ethereum.Block
+): void {
+  let id = questionId.toHexString()
+  if (MarketName.load(id) != null) return
+  let n = new MarketName(id)
+  n.title = title
+  n.creator = creator
+  n.gammaId = extractGammaId(text)
+  n.kind = kind
+  n.negRiskEvent = negRiskEvent
+  n.createdAtBlock = block.number
+  n.createdAtTimestamp = block.timestamp
+  n.save()
+  // Condition may already exist (ConditionPreparation precedes the name event in the same tx)
+  let c = Condition.load(conditionIdFor(oracle, questionId, 2))
+  if (c != null && c.title === null) {
+    c.title = title
+    c.name = id
+    c.save()
+  }
 }
 
-export function handleOrdersMatchedNegRisk(event: NegOrdersMatched): void {
-  applyOrdersMatched(
-    event.transaction.hash,
-    event.logIndex,
-    event.block.timestamp,
-    event.params.side,
-    event.params.tokenId,
-    event.params.makerAmountFilled,
-    event.params.takerAmountFilled
-  )
+export function handleQuestionInitialized(event: QuestionInitialized): void {
+  let text = bytesToText(event.params.ancillaryData)
+  let title = extractTitle(text, "title:")
+  if (title === null) return
+  saveName(event.params.questionID, title as string, text, event.params.creator, "uma", null, UMA_ADAPTER, event.block)
+}
+
+export function handleQuestionPrepared(event: QuestionPrepared): void {
+  let text = bytesToText(event.params.data)
+  let title = extractTitle(text, "question:")
+  if (title === null) return
+  let ev = event.params.marketId.toHexString()
+  let evRef: string | null = NegRiskEvent.load(ev) != null ? ev : null
+  saveName(event.params.questionId, title as string, text, null, "negrisk", evRef, NEG_RISK_ADAPTER, event.block)
+}
+
+export function handleMarketPrepared(event: MarketPrepared): void {
+  let id = event.params.marketId.toHexString()
+  if (NegRiskEvent.load(id) != null) return
+  let text = bytesToText(event.params.data)
+  let title = extractTitle(text, "title:")
+  if (title === null) return
+  let e = new NegRiskEvent(id)
+  e.title = title as string
+  e.gammaId = extractGammaId(text)
+  e.createdAtBlock = event.block.number
+  e.save()
 }
