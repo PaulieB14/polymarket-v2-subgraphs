@@ -697,6 +697,58 @@ def position_ids(rpc: RPC, m: dict, head: int) -> None:
         m["noId"] = int(no_r, 16)
 
 
+
+def refetch_sg_at_block(gkey: str, markets: list[dict], block: int) -> None:
+    """Overwrite m['sg'] with deployment state at `block`, not chain tip.
+
+    hydrate() / expand_universe() query the subgraph at HEAD. If the run is
+    resumed after the pin, those HEAD figures (and data-api /v2/oi, which has
+    no historical block) are not comparable to a pinned replay. Always compare
+    replay vs subgraph at the same block.
+    """
+    by_id = {m["conditionId"]: m for m in markets}
+    missing = []
+    for group in chunks(list(by_id), 40):
+        data = graphql(gkey, """{
+          mois: marketOpenInterests(first: 100, where: {id_in: [%s]}, block: {number: %s}) {
+            id amount amountRaw splitCount mergeCount redemptionCount conversionCount
+            createdAtBlock lastUpdatedBlock negRisk
+          }
+        }""" % (gql_ids(group), block))
+        seen = set()
+        for row in data["mois"]:
+            m = by_id.get(row["id"].lower())
+            if not m:
+                continue
+            m["sg"] = row
+            m["sg_block"] = block
+            seen.add(row["id"].lower())
+        missing.extend(cid for cid in group if cid not in seen)
+    if missing:
+        print("WARN no subgraph row at pin for", missing)
+    print(f"  refetched subgraph rows at block {block} for {len(markets) - len(missing)} markets")
+
+
+def fetch_tip_last_updated(gkey: str, markets: list[dict], pin: int) -> None:
+    """data-api /v2/oi and Gamma prices are tip-only. Flag markets that moved after the pin."""
+    by_id = {m["conditionId"]: m for m in markets}
+    for group in chunks(list(by_id), 40):
+        data = graphql(gkey, """{
+          mois: marketOpenInterests(first: 100, where: {id_in: [%s]}) {
+            id lastUpdatedBlock amount amountRaw splitCount mergeCount
+          }
+        }""" % gql_ids(group))
+        for row in data["mois"]:
+            m = by_id.get(row["id"].lower())
+            if not m:
+                continue
+            tip = int(row["lastUpdatedBlock"]) if row.get("lastUpdatedBlock") else None
+            m["tip_lastUpdatedBlock"] = tip
+            m["traded_after_pin"] = bool(tip is not None and tip > pin)
+            m["tip_sg"] = row
+    n = sum(1 for m in markets if m.get("traded_after_pin"))
+    print(f"  tip lastUpdated > pin on {n}/{len(markets)} markets (API/Gamma not comparable to pinned replay)")
+
 def hydrate_position_ids(rpc: RPC, markets: list[dict], head: int) -> None:
     """Batch getPositionId / getCollectionId to stay under Alchemy rate limits."""
     blk = _blk(head)
@@ -1317,6 +1369,8 @@ def main() -> int:
     events, fee_rows = hydrate(gkey, markets)
     expand_universe(gkey, markets)
     print(f"  hydrated {len(markets)} (after extras/drops)")
+    print(f"  refetching subgraph rows at pinned block {head}…")
+    refetch_sg_at_block(gkey, markets, head)
     print(f"  feeBps>0 multi-q events: {fee_rows.get('feeMulti')}")
     print(f"  feeBps>0 any: {fee_rows.get('feeAny')}")
 
@@ -1355,8 +1409,10 @@ def main() -> int:
         cid = m["conditionId"]
         prev = (progress.get("replays") or {}).get(cid)
         refresh = False
-        if prev and prev.get("replay") and not prev["replay"].get("error") and prev.get("sg") and m.get("sg"):
-            sg, rp = prev["sg"], prev["replay"]
+        if prev and prev.get("replay") and not prev["replay"].get("error") and m.get("sg"):
+            # Compare the pinned subgraph row (just refetched) to the cached replay,
+            # not a stale HEAD sg saved in the checkpoint.
+            sg, rp = m["sg"], prev["replay"]
             if (
                 int(sg.get("splitCount") or 0) != int(rp.get("splitCount") or 0)
                 or int(sg.get("mergeCount") or 0) != int(rp.get("mergeCount") or 0)
@@ -1423,6 +1479,11 @@ def main() -> int:
         progress["phase"] = "prices"
         progress["updated"] = time.strftime("%Y-%m-%d %H:%M:%S %Z")
         save_progress(progress)
+    print("Checking tip lastUpdated vs pin (data-api is tip-only)…", flush=True)
+    try:
+        fetch_tip_last_updated(gkey, markets, head)
+    except Exception as e:
+        print("  tip lastUpdated fetch failed:", redact(str(e), logs_rpc.url, key, gkey)[:200], flush=True)
 
     # Transfer subset (quiet markets). Optional: VALIDATE_OI_SKIP_XFER=1 to stay
     # inside a short run; burned NO is already checked via balanceOf.
@@ -1557,6 +1618,10 @@ def main() -> int:
                 "redeem": int(m["sg"]["redemptionCount"]),
                 "convert": int(m["sg"].get("conversionCount") or 0),
             },
+            "sg_block": m.get("sg_block", head),
+            "sg_lastUpdated": int(m["sg"]["lastUpdatedBlock"]) if m.get("sg") and m["sg"].get("lastUpdatedBlock") else None,
+            "tip_lastUpdated": m.get("tip_lastUpdatedBlock"),
+            "traded_after_pin": bool(m.get("traded_after_pin")),
         }
         rows.append(row)
 
@@ -1591,9 +1656,12 @@ def main() -> int:
             ) if False else None,
         }
 
-    priced_rows = [r for r in rows if r["res_gamma"] is not None]
+    n_traded_after = sum(1 for r in rows if r.get("traded_after_pin"))
+    # data-api / Gamma are tip-only: skip markets that moved after the pin
+    priced_rows = [r for r in rows if r["res_gamma"] is not None and not r.get("traded_after_pin")]
     n = len(priced_rows)
     resid_stats = {
+        "n_traded_after_pin": n_traded_after,
         "n_with_api_and_price": n,
         "within_1": sum(1 for r in priced_rows if abs(r["res_gamma"]) <= 1),
         "within_100": sum(1 for r in priced_rows if abs(r["res_gamma"]) <= 100),
@@ -1722,9 +1790,11 @@ def write_markdown(report, rows, inv, resid_stats, price_convention, hist_stats,
     a("## Residual distribution (priced OI vs data-api)")
     a("")
     a("priced = `yesSupply * p + noSupply * (1-p)` using Gamma `outcomePrices[0]` unless noted.")
+    a("data-api `/v2/oi` and Gamma prices have no historical block; markets whose live `lastUpdatedBlock` is after the pin are excluded.")
     a("")
     a("| metric | count |")
     a("|---|---:|")
+    a(f"| markets that traded after the pin (excluded) | {resid_stats.get('n_traded_after_pin', 0)} |")
     a(f"| markets with both API and Gamma p | {resid_stats['n_with_api_and_price']} |")
     a(f"| residual within $1 | {resid_stats['within_1']} |")
     a(f"| residual within $100 | {resid_stats['within_100']} |")
