@@ -36,18 +36,45 @@ type NegRiskQuestion @entity(immutable: false) {
   reportedAtBlock: BigInt
 }
 
+"""
+Per-market open interest.
+
+`amount` is unpriced collateral attribution (splits - merges - redemptions, plus
+neg-risk conversion bookkeeping from PositionsConverted / OutcomeReported). It
+matches Polymarket's data-api on regular binary markets, where yesSupply ==
+noSupply == amount, because priced gross OI = yes*p + no*(1-p) collapses to
+amount when p+(1-p)=1 and supplies are balanced.
+
+On open neg-risk markets the data-api reports priced gross OI:
+  yesSupply * yesPrice + noSupply * (1 - yesPrice)
+That cannot be produced on-chain (no CLOB prices). Use yesSupply and noSupply
+and apply a price off-chain. `amount` remains the collateral figure; after the
+event is fully reported and winning tokens are redeemed, it settles back in
+line with global OI.
+"""
 type MarketOpenInterest @entity(immutable: false) {
   id: ID!                                    # conditionId
   conditionId: Bytes!
   "USDC.e for both standard and neg-risk markets (neg-risk OI is tracked in USDC terms via the NegRiskAdapter)"
   collateralToken: Bytes!
   negRisk: Boolean!
-  amount: BigDecimal!                        # USDC, 6 decimals
+  amount: BigDecimal!                        # unpriced collateral attribution, 6 decimals
   amountRaw: BigInt!
+  "Circulating YES outcome-token supply (6 decimals). Includes YES minted by convertPositions. Tokens at the NO burn address are excluded."
+  yesSupply: BigDecimal!
+  yesSupplyRaw: BigInt!
+  "Circulating NO outcome-token supply (6 decimals). NO sent to the adapter burn address is excluded."
+  noSupply: BigDecimal!
+  noSupplyRaw: BigInt!
   splitCount: BigInt!
   mergeCount: BigInt!
   redemptionCount: BigInt!
+  "Incremented on every PositionsConverted in this question's event (both mint and burn sides), so it is identical across questions of the same event."
   conversionCount: BigInt!
+  "Conversions that minted YES on this question (it was outside the indexSet)."
+  convertMintCount: BigInt!
+  "Conversions that burned this question's NO (it was in the indexSet)."
+  convertBurnCount: BigInt!
   createdAtBlock: BigInt!
   createdAtTimestamp: BigInt!
   lastUpdatedBlock: BigInt!

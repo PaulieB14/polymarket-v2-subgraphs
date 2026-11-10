@@ -1,13 +1,24 @@
 # open-interest (V2)
 
 Per-market and global Open Interest for Polymarket on Polygon, in USDC (6 decimals).
-OI = collateral locked in outcome tokens: splits add, merges and redemptions subtract,
-and neg-risk conversions subtract the collateral they release.
+`amount` is unpriced collateral locked in outcome tokens: splits add, merges and
+redemptions subtract, and neg-risk conversions adjust per-question bookkeeping
+and subtract the collateral they release from the global total.
 
-The accounting follows Polymarket's own
-[`oi-subgraph`](https://github.com/Polymarket/polymarket-subgraph/tree/main/oi-subgraph)
-(same gating, same neg-risk conversion math), plus a `parentCollectionId == 0` check and
-this repo's extra fields (counts, hourly snapshots, decimal amounts).
+Polymarket's data-api (`/v2/oi`) reports *priced gross* open interest:
+`yesSupply * yesPrice + noSupply * (1 - yesPrice)` (minus fee-receiver shares).
+On regular binary markets `yesSupply == noSupply == amount`, so `amount` matches
+the API to the cent. On open neg-risk markets the supplies are unbalanced
+(conversions mint YES on the complement and burn NO in the index set), so
+`amount` will not match the API. Use `yesSupply` / `noSupply` and apply a price
+off-chain.
+
+The gating (binary conditions, USDC.e-only CTF events, adapter-tracked neg-risk)
+follows Polymarket's own
+[`oi-subgraph`](https://github.com/Polymarket/polymarket-subgraph/tree/main/oi-subgraph),
+plus a `parentCollectionId == 0` check, conversion settlement on
+`OutcomeReported`, circulating supplies, and this repo's extra fields (counts,
+hourly snapshots, decimal amounts).
 
 ## Data sources
 
@@ -34,12 +45,24 @@ this repo's extra fields (counts, hourly snapshots, decimal amounts).
   the CTF level overstates OI, because `convertPositions` mints WCOL and splits for the
   complementary questions while the converted NO tokens are burned. V2's
   `NegRiskCtfCollateralAdapter` routes through this adapter, so V2 is covered.
-- **Conversions:** converting `amount` NO tokens of k questions releases `(k-1)*amount`,
-  including the fee that goes to the vault. That's subtracted from global OI and spread
-  evenly over the k conditions. Per-market neg-risk OI is therefore an allocation and can go
-  slightly negative on individual questions. Polymarket's subgraph behaves the same way.
+- **Conversions:** `convertPositions(marketId, indexSet, amount)` burns `amount` NO
+  on each of the k questions in `indexSet`, mints `amount` YES on each of the other
+  n−k questions, and releases `(k-1)*amount` collateral (fee included; fee is 0 on
+  the events we checked). This subgraph:
+  - subtracts the released collateral from **global** OI (same as Polymarket's oi-subgraph);
+  - updates per-market `amount` by −amount on the converted questions and +amount on
+    the complement, then settles those bookkeeping entries on `OutcomeReported`
+    (this is *not* what Polymarket's oi-subgraph does — theirs spreads the released
+    collateral over the k converted questions only, which is how sibling markets
+    went to ±$50M before our PRs #3/#4);
+  - updates circulating `yesSupply` / `noSupply` for the tokens actually minted or
+    burned. Those supplies, times the outcome price, are what match the data-api.
+- **`conversionCount`** is incremented for every question in the event on each
+  conversion, so it is identical across the event. Use `convertMintCount` /
+  `convertBurnCount` to see which side a question was on.
 - **No clamping.** Full history from the CTF deployment means every decrease has a matching
-  earlier increase.
+  earlier increase. A full resync is required after this change; grafting cannot
+  repair historical `amount` or supplies.
 
 ## Start block
 
@@ -52,7 +75,7 @@ from.
 
 - `Condition`: registered binary conditions
 - `NegRiskEvent`: neg-risk markets (fee, question count)
-- `MarketOpenInterest`: per-condition OI, split, merge, redemption, and conversion counts, `negRisk` flag
+- `MarketOpenInterest`: per-condition collateral `amount`, circulating `yesSupply` / `noSupply`, split, merge, redemption, and conversion counts, `negRisk` flag
 - `OISnapshot`: hourly per-market snapshots
 - `GlobalOpenInterest`: platform total (`id: "global"`)
 
