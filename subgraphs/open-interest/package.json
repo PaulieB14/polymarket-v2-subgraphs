@@ -2,14 +2,15 @@
   "name": "polymarket-v2-open-interest-subgraph",
   "version": "0.1.0",
   "private": true,
-  "description": "Polymarket CLOB V2 Open Interest subgraph — per-market and global OI",
+  "description": "Polymarket CLOB V2 Open Interest subgraph \u2014 per-market and global OI",
   "scripts": {
     "codegen": "graph codegen",
     "build": "graph build",
     "deploy": "graph deploy --studio polymarket-v2-open-interest",
     "create-local": "graph create --node http://localhost:8020/ polymarket-v2-open-interest",
     "deploy-local": "graph deploy --node http://localhost:8020/ --ipfs http://localhost:5001 polymarket-v2-open-interest",
-    "test": "graph test"
+    "test": "bash scripts/run-matchstick.sh",
+    "test:graph": "graph test"
   },
   "devDependencies": {
     "@graphprotocol/graph-cli": "^0.98.1",
