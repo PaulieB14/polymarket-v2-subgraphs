@@ -295,6 +295,12 @@ def get_logs(rpc: RPC, address: str, topics: list, start: int, end: int, label: 
         }]
         try:
             logs = rpc.call("eth_getLogs", params, timeout=120)
+            if len(logs) >= 10_000 and (to - cursor) > 0:
+                mid = (cursor + to) // 2
+                print(f"    cap-split {label} {cursor}-{to} ({len(logs)} logs) at {mid}")
+                # shrink chunk and retry this window in two halves
+                chunk = max(50, (to - cursor) // 2)
+                continue
             out.extend(logs)
             cursor = to + 1
             retries = 0
