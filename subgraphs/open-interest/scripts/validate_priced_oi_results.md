@@ -96,6 +96,6 @@ Commit `22b21f2` (consumer-invisible): write `OISnapshot` without `load()`; load
 | `18c999f0` | yesSupply / noSupply (original PR) |
 | `22b21f2` | indexer perf #1 |
 | `7e34005` | Matchstick runner for Debian 13; 39/39 passed |
-| `532799f` | 10k log cap + validation script + this report |
+| `e5ff182` | 10k log cap + validation script + this report |
 
 Nothing merged, deployed, or published.
