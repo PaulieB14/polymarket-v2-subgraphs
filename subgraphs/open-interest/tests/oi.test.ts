@@ -229,5 +229,20 @@ describe("NegRiskAdapter", () => {
     assert.fieldEquals("MarketOpenInterest", conds[1].toHexString(), "amountRaw", "26000000")
     assert.fieldEquals("MarketOpenInterest", conds[3].toHexString(), "amountRaw", "44000000")
     assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "negRisk", "true")
+    // Circulating supplies: each question was split for 30, then 9 NO burned on
+    // q0-q2 and 9 YES minted on q3, then 5 more NO burned on q0 and 5 YES minted
+    // on q1-q3.
+    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "yesSupplyRaw", "30000000")
+    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "noSupplyRaw", "16000000")
+    assert.fieldEquals("MarketOpenInterest", conds[1].toHexString(), "yesSupplyRaw", "35000000")
+    assert.fieldEquals("MarketOpenInterest", conds[1].toHexString(), "noSupplyRaw", "21000000")
+    assert.fieldEquals("MarketOpenInterest", conds[2].toHexString(), "yesSupplyRaw", "35000000")
+    assert.fieldEquals("MarketOpenInterest", conds[2].toHexString(), "noSupplyRaw", "21000000")
+    assert.fieldEquals("MarketOpenInterest", conds[3].toHexString(), "yesSupplyRaw", "44000000")
+    assert.fieldEquals("MarketOpenInterest", conds[3].toHexString(), "noSupplyRaw", "30000000")
+    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "convertBurnCount", "2")
+    assert.fieldEquals("MarketOpenInterest", conds[0].toHexString(), "convertMintCount", "0")
+    assert.fieldEquals("MarketOpenInterest", conds[3].toHexString(), "convertMintCount", "2")
+    assert.fieldEquals("MarketOpenInterest", conds[3].toHexString(), "convertBurnCount", "0")
   })
 })

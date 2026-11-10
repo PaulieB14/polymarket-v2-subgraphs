@@ -39,10 +39,16 @@ function getOrCreateMarket(conditionId: string, negRisk: boolean, event: ethereu
     market.negRisk = negRisk
     market.amount = BD_ZERO
     market.amountRaw = BI_ZERO
+    market.yesSupply = BD_ZERO
+    market.yesSupplyRaw = BI_ZERO
+    market.noSupply = BD_ZERO
+    market.noSupplyRaw = BI_ZERO
     market.splitCount = BI_ZERO
     market.mergeCount = BI_ZERO
     market.redemptionCount = BI_ZERO
     market.conversionCount = BI_ZERO
+    market.convertMintCount = BI_ZERO
+    market.convertBurnCount = BI_ZERO
     market.createdAtBlock = event.block.number
     market.createdAtTimestamp = event.block.timestamp
     let global = getOrCreateGlobal()
@@ -114,4 +120,36 @@ export function updateGlobal(delta: BigInt, event: ethereum.Event): void {
 export function updateOpenInterest(conditionId: string, delta: BigInt, kind: i32, negRisk: boolean, event: ethereum.Event): void {
   updateMarket(conditionId, delta, kind, negRisk, event)
   updateGlobal(delta, event)
+}
+
+/**
+ * Adjust circulating YES / NO outcome-token supplies (raw 6dp). These are the
+ * quantities needed to reconstruct Polymarket's data-api figure:
+ *   priced OI = yesSupply * yesPrice + noSupply * (1 - yesPrice)
+ * Burned-to-address NO is not circulating and must not be added here.
+ */
+export function updateSupplies(conditionId: string, yesDelta: BigInt, noDelta: BigInt, negRisk: boolean, event: ethereum.Event): void {
+  if (yesDelta.isZero() && noDelta.isZero()) return
+  // Creating a market with a zero-amount, zero-supply first touch is still
+  // skipped by updateMarket; a non-zero supply delta is a real market.
+  let market = getOrCreateMarket(conditionId, negRisk, event)
+  market.yesSupplyRaw = market.yesSupplyRaw.plus(yesDelta)
+  market.noSupplyRaw = market.noSupplyRaw.plus(noDelta)
+  market.yesSupply = toDecimal(market.yesSupplyRaw)
+  market.noSupply = toDecimal(market.noSupplyRaw)
+  market.lastUpdatedBlock = event.block.number
+  market.lastUpdatedTimestamp = event.block.timestamp
+  market.save()
+}
+
+export function bumpConvertMint(conditionId: string, negRisk: boolean, event: ethereum.Event): void {
+  let market = getOrCreateMarket(conditionId, negRisk, event)
+  market.convertMintCount = market.convertMintCount.plus(BI_ONE)
+  market.save()
+}
+
+export function bumpConvertBurn(conditionId: string, negRisk: boolean, event: ethereum.Event): void {
+  let market = getOrCreateMarket(conditionId, negRisk, event)
+  market.convertBurnCount = market.convertBurnCount.plus(BI_ONE)
+  market.save()
 }

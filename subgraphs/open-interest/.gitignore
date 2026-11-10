@@ -1,2 +1,4 @@
 tests/.bin/
 tests/.latest.json
+scripts/cache/
+scripts/__pycache__/

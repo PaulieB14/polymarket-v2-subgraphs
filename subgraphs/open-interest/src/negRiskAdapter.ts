@@ -19,6 +19,9 @@ import {
   updateOpenInterest,
   updateMarket,
   updateGlobal,
+  updateSupplies,
+  bumpConvertMint,
+  bumpConvertBurn,
 } from "./oi"
 
 const FEE_DENOMINATOR = BigInt.fromI32(10000)
@@ -60,18 +63,25 @@ export function handleNegRiskPositionSplit(event: PositionSplit): void {
   let id = event.params.conditionId.toHexString()
   if (Condition.load(id) == null) return
   updateOpenInterest(id, event.params.amount, KIND_SPLIT, true, event)
+  updateSupplies(id, event.params.amount, event.params.amount, true, event)
 }
 
 export function handleNegRiskPositionsMerge(event: PositionsMerge): void {
   let id = event.params.conditionId.toHexString()
   if (Condition.load(id) == null) return
   updateOpenInterest(id, event.params.amount.neg(), KIND_MERGE, true, event)
+  updateSupplies(id, event.params.amount.neg(), event.params.amount.neg(), true, event)
 }
 
 export function handleNegRiskPayoutRedemption(event: PayoutRedemption): void {
   let id = event.params.conditionId.toHexString()
   if (Condition.load(id) == null) return
   updateOpenInterest(id, event.params.payout.neg(), KIND_REDEEM, true, event)
+  // amounts[0] = YES tokens burned, amounts[1] = NO tokens burned
+  let amounts = event.params.amounts
+  let yesBurn = amounts.length > 0 ? amounts[0] : BigInt.zero()
+  let noBurn = amounts.length > 1 ? amounts[1] : BigInt.zero()
+  updateSupplies(id, yesBurn.neg(), noBurn.neg(), true, event)
 }
 
 // convertPositions(marketId, indexSet, amount) on an n-question event:
@@ -88,6 +98,10 @@ export function handleNegRiskPayoutRedemption(event: PayoutRedemption): void {
 // What was debited/credited is tracked on NegRiskQuestion and settled in
 // handleOutcomeReported, so every question returns to ~0 once all winning
 // positions are redeemed, and sum(per-question) == global for the event.
+// Circulating supplies are updated separately: +amount YES on the complement,
+// -amount NO on the converted questions. OutcomeReported does not change
+// supplies (tokens still exist until redeemed). Polymarket's data-api OI is
+// yesSupply * p + noSupply * (1-p), not `amount`.
 export function handlePositionsConverted(event: PositionsConverted): void {
   let e = NegRiskEvent.load(event.params.marketId.toHexString())
   if (e == null) return
@@ -119,6 +133,8 @@ export function handlePositionsConverted(event: PositionsConverted): void {
     q.mintedRaw = q.mintedRaw.plus(amount)
     q.save()
     updateMarket(yesIds[i], amount, KIND_CONVERT, true, event)
+    updateSupplies(yesIds[i], amount, BigInt.zero(), true, event)
+    bumpConvertMint(yesIds[i], true, event)
   }
   for (let i = 0; i < noIds.length; i++) {
     let q = getOrCreateQuestion(noIds[i], event.params.marketId, noQids[i])
@@ -126,6 +142,8 @@ export function handlePositionsConverted(event: PositionsConverted): void {
     q.burnedRaw = q.burnedRaw.plus(amount)
     q.save()
     updateMarket(noIds[i], amount.neg(), KIND_CONVERT, true, event)
+    updateSupplies(noIds[i], BigInt.zero(), amount.neg(), true, event)
+    bumpConvertBurn(noIds[i], true, event)
   }
   if (noCount > 1) {
     // same rounding as Polymarket: fee and net parts released separately
