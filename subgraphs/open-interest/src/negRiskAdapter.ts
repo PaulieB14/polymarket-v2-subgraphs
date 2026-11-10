@@ -8,7 +8,7 @@ import {
   PositionsConverted,
   OutcomeReported,
 } from "../generated/NegRiskAdapter/NegRiskAdapter"
-import { Condition, NegRiskEvent, NegRiskQuestion } from "../generated/schema"
+import { NegRiskEvent, NegRiskQuestion } from "../generated/schema"
 import {
   NEG_RISK_ADAPTER,
   KIND_SPLIT,
@@ -16,6 +16,7 @@ import {
   KIND_REDEEM,
   KIND_CONVERT,
   KIND_RESOLVE,
+  isTrackedCondition,
   updateOpenInterest,
   updateMarket,
   updateGlobal,
@@ -61,21 +62,21 @@ export function handleQuestionPrepared(event: QuestionPrepared): void {
 // WrappedCollateral 1:1 before touching the CTF.
 export function handleNegRiskPositionSplit(event: PositionSplit): void {
   let id = event.params.conditionId.toHexString()
-  if (Condition.load(id) == null) return
+  if (!isTrackedCondition(id)) return
   updateOpenInterest(id, event.params.amount, KIND_SPLIT, true, event)
   updateSupplies(id, event.params.amount, event.params.amount, true, event)
 }
 
 export function handleNegRiskPositionsMerge(event: PositionsMerge): void {
   let id = event.params.conditionId.toHexString()
-  if (Condition.load(id) == null) return
+  if (!isTrackedCondition(id)) return
   updateOpenInterest(id, event.params.amount.neg(), KIND_MERGE, true, event)
   updateSupplies(id, event.params.amount.neg(), event.params.amount.neg(), true, event)
 }
 
 export function handleNegRiskPayoutRedemption(event: PayoutRedemption): void {
   let id = event.params.conditionId.toHexString()
-  if (Condition.load(id) == null) return
+  if (!isTrackedCondition(id)) return
   updateOpenInterest(id, event.params.payout.neg(), KIND_REDEEM, true, event)
   // amounts[0] = YES tokens burned, amounts[1] = NO tokens burned
   let amounts = event.params.amounts

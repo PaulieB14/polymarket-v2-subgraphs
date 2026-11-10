@@ -1,5 +1,5 @@
 import { Address, BigDecimal, BigInt, Bytes, ethereum } from "@graphprotocol/graph-ts"
-import { MarketOpenInterest, OISnapshot, GlobalOpenInterest } from "../generated/schema"
+import { Condition, MarketOpenInterest, OISnapshot, GlobalOpenInterest } from "../generated/schema"
 
 // Only collateral counted at the CTF level. Everything Polymarket lists settles in
 // USDC.e at the CTF (V2's CtfCollateralAdapter unwraps pUSD -> USDC.e before
@@ -12,10 +12,11 @@ export const ZERO_BYTES32 = Bytes.fromHexString(
   "0x0000000000000000000000000000000000000000000000000000000000000000"
 )
 
-const USDC_DECIMALS: u8 = 6
 const BD_ZERO = BigDecimal.zero()
 const BI_ZERO = BigInt.zero()
 const BI_ONE = BigInt.fromI32(1)
+// Precomputed 1e6 so toDecimal does not call BigInt.pow on the host for every update.
+const BD_1E6 = BigInt.fromI32(1000000).toBigDecimal()
 const HOUR_SECONDS = BigInt.fromI32(3600)
 const GLOBAL_ID = "global"
 
@@ -27,7 +28,19 @@ export const KIND_CONVERT = 3
 export const KIND_RESOLVE = 4
 
 function toDecimal(amount: BigInt): BigDecimal {
-  return amount.toBigDecimal().div(BigInt.fromI32(10).pow(USDC_DECIMALS).toBigDecimal())
+  return amount.toBigDecimal().div(BD_1E6)
+}
+
+/** True if this condition is a registered binary Polymarket market.
+ *  Once a MarketOpenInterest exists we skip Condition.load: markets are only
+ *  created for registered conditions. The first touch still loads Condition so
+ *  unregistered ids never reach updateGlobal (including zero-delta redemptions).
+ *  This lives at the handler gate rather than only inside getOrCreateMarket so
+ *  that zero-payout first touches on a registered market still update global
+ *  lastUpdated, matching previous writes. */
+export function isTrackedCondition(conditionId: string): boolean {
+  if (MarketOpenInterest.load(conditionId) != null) return true
+  return Condition.load(conditionId) != null
 }
 
 function getOrCreateMarket(conditionId: string, negRisk: boolean, event: ethereum.Event): MarketOpenInterest {
@@ -72,12 +85,11 @@ function getOrCreateGlobal(): GlobalOpenInterest {
 }
 
 function snapshot(market: MarketOpenInterest, event: ethereum.Event): void {
+  // Deterministic id; every field is overwritten, so skip the load() and
+  // construct a new entity. Same write order and values as before.
   let id = market.id + "-" + event.block.timestamp.div(HOUR_SECONDS).toString()
-  let snap = OISnapshot.load(id)
-  if (snap == null) {
-    snap = new OISnapshot(id)
-    snap.market = market.id
-  }
+  let snap = new OISnapshot(id)
+  snap.market = market.id
   snap.amount = market.amount
   snap.amountRaw = market.amountRaw
   snap.blockNumber = event.block.number
