@@ -192,3 +192,14 @@ export function noNegative(ev: NrEvent, what: string): void {
     assert.assertTrue(!v.lt(BigInt.zero()), what + ": q" + i.toString() + " negative " + v.toString())
   }
 }
+// Redemption with explicit [yes, no] token amounts burned (NegRiskAdapter event semantics).
+export function redeemAmounts(ev: NrEvent, q: i32, yes: BigInt, no: BigInt, payout: BigInt): void {
+  let r = changetype<NrRedemption>(mock())
+  r.parameters = [
+    p("redeemer", ethereum.Value.fromAddress(USER)),
+    p("conditionId", ethereum.Value.fromFixedBytes(ev.conds[q])),
+    p("amounts", ethereum.Value.fromUnsignedBigIntArray([yes, no])),
+    p("payout", bi(payout)),
+  ]
+  handleNegRiskPayoutRedemption(r)
+}

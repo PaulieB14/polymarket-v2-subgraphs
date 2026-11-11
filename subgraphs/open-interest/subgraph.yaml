@@ -22,6 +22,7 @@ dataSources:
       language: wasm/assemblyscript
       entities:
         - Condition
+        - ConditionPayout
         - MarketOpenInterest
         - OISnapshot
         - GlobalOpenInterest
@@ -37,6 +38,8 @@ dataSources:
           handler: handlePositionsMerge
         - event: PayoutRedemption(indexed address,indexed address,indexed bytes32,bytes32,uint256[],uint256)
           handler: handlePayoutRedemption
+        - event: ConditionResolution(indexed bytes32,indexed address,indexed bytes32,uint256,uint256[])
+          handler: handleConditionResolution
       file: ./src/mapping.ts
   # Neg Risk Adapter. Neg-risk markets use WrappedCollateral (WCOL) at the CTF
   # level, which the CTF handlers ignore; their OI is tracked here in USDC terms

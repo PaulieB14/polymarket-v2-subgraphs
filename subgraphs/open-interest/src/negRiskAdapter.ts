@@ -8,7 +8,7 @@ import {
   PositionsConverted,
   OutcomeReported,
 } from "../generated/NegRiskAdapter/NegRiskAdapter"
-import { NegRiskEvent, NegRiskQuestion } from "../generated/schema"
+import { MarketOpenInterest, NegRiskEvent, NegRiskQuestion } from "../generated/schema"
 import {
   NEG_RISK_ADAPTER,
   KIND_SPLIT,
@@ -16,13 +16,11 @@ import {
   KIND_REDEEM,
   KIND_CONVERT,
   KIND_RESOLVE,
-  isTrackedCondition,
-  updateOpenInterest,
+  MarketWrite,
+  trackedMarket,
+  commitWithGlobal,
+  applyGlobal,
   updateMarket,
-  updateGlobal,
-  updateSupplies,
-  bumpConvertMint,
-  bumpConvertBurn,
 } from "./oi"
 
 const FEE_DENOMINATOR = BigInt.fromI32(10000)
@@ -61,28 +59,34 @@ export function handleQuestionPrepared(event: QuestionPrepared): void {
 // Adapter split/merge/redeem amounts are USDC (6dp): the adapter wraps USDC.e into
 // WrappedCollateral 1:1 before touching the CTF.
 export function handleNegRiskPositionSplit(event: PositionSplit): void {
-  let id = event.params.conditionId.toHexString()
-  if (!isTrackedCondition(id)) return
-  updateOpenInterest(id, event.params.amount, KIND_SPLIT, true, event)
-  updateSupplies(id, event.params.amount, event.params.amount, true, event)
+  let w = trackedMarket(event.params.conditionId.toHexString(), true, event)
+  if (w == null) return
+  let amount = event.params.amount
+  w.amount(amount, KIND_SPLIT)
+  w.supplies(amount, amount, true)
+  commitWithGlobal(w, amount, event)
 }
 
 export function handleNegRiskPositionsMerge(event: PositionsMerge): void {
-  let id = event.params.conditionId.toHexString()
-  if (!isTrackedCondition(id)) return
-  updateOpenInterest(id, event.params.amount.neg(), KIND_MERGE, true, event)
-  updateSupplies(id, event.params.amount.neg(), event.params.amount.neg(), true, event)
+  let w = trackedMarket(event.params.conditionId.toHexString(), true, event)
+  if (w == null) return
+  let delta = event.params.amount.neg()
+  w.amount(delta, KIND_MERGE)
+  w.supplies(delta, delta, true)
+  commitWithGlobal(w, delta, event)
 }
 
 export function handleNegRiskPayoutRedemption(event: PayoutRedemption): void {
-  let id = event.params.conditionId.toHexString()
-  if (!isTrackedCondition(id)) return
-  updateOpenInterest(id, event.params.payout.neg(), KIND_REDEEM, true, event)
+  let w = trackedMarket(event.params.conditionId.toHexString(), true, event)
+  if (w == null) return
+  let delta = event.params.payout.neg()
+  w.amount(delta, KIND_REDEEM)
   // amounts[0] = YES tokens burned, amounts[1] = NO tokens burned
   let amounts = event.params.amounts
   let yesBurn = amounts.length > 0 ? amounts[0] : BigInt.zero()
   let noBurn = amounts.length > 1 ? amounts[1] : BigInt.zero()
-  updateSupplies(id, yesBurn.neg(), noBurn.neg(), true, event)
+  w.supplies(yesBurn.neg(), noBurn.neg(), true)
+  commitWithGlobal(w, delta, event)
 }
 
 // convertPositions(marketId, indexSet, amount) on an n-question event:
@@ -128,29 +132,43 @@ export function handlePositionsConverted(event: PositionsConverted): void {
   let noCount = noIds.length
   if (noCount == 0 || amount.isZero()) return
 
+  // Each question appears once per event (yes/no sides are disjoint), so each
+  // market is loaded once, updated in memory and saved once.
+  let created = 0
   for (let i = 0; i < yesIds.length; i++) {
+    let w = new MarketWrite(yesIds[i], MarketOpenInterest.load(yesIds[i]), true, event)
+    // YES is minted on chain even after the question was reported NO (worthless,
+    // but later redeemed for $0 and subtracted), so supplies always move.
+    w.supplies(amount, BigInt.zero(), true)
+    w.convertMint()
     let q = getOrCreateQuestion(yesIds[i], event.params.marketId, yesQids[i])
-    if (q.outcome == OUTCOME_NO) continue
-    q.mintedRaw = q.mintedRaw.plus(amount)
-    q.save()
-    updateMarket(yesIds[i], amount, KIND_CONVERT, true, event)
-    updateSupplies(yesIds[i], amount, BigInt.zero(), true, event)
-    bumpConvertMint(yesIds[i], true, event)
+    if (q.outcome != OUTCOME_NO) {
+      q.mintedRaw = q.mintedRaw.plus(amount)
+      q.save()
+      w.amount(amount, KIND_CONVERT)
+    }
+    created += w.commit()
   }
   for (let i = 0; i < noIds.length; i++) {
+    let w = new MarketWrite(noIds[i], MarketOpenInterest.load(noIds[i]), true, event)
+    // NO is burned on chain even after the question was reported YES.
+    w.supplies(BigInt.zero(), amount.neg(), true)
+    w.convertBurn()
     let q = getOrCreateQuestion(noIds[i], event.params.marketId, noQids[i])
-    if (q.outcome == OUTCOME_YES) continue
-    q.burnedRaw = q.burnedRaw.plus(amount)
-    q.save()
-    updateMarket(noIds[i], amount.neg(), KIND_CONVERT, true, event)
-    updateSupplies(noIds[i], BigInt.zero(), amount.neg(), true, event)
-    bumpConvertBurn(noIds[i], true, event)
+    if (q.outcome != OUTCOME_YES) {
+      q.burnedRaw = q.burnedRaw.plus(amount)
+      q.save()
+      w.amount(amount.neg(), KIND_CONVERT)
+    }
+    created += w.commit()
   }
   if (noCount > 1) {
     // same rounding as Polymarket: fee and net parts released separately
     let fee = amount.times(e.feeBps).div(FEE_DENOMINATOR)
     let multiplier = BigInt.fromI32(noCount - 1)
-    updateGlobal(fee.times(multiplier).plus(amount.minus(fee).times(multiplier)).neg(), event)
+    applyGlobal(fee.times(multiplier).plus(amount.minus(fee).times(multiplier)).neg(), created, true, event)
+  } else {
+    applyGlobal(BigInt.zero(), created, false, event)
   }
 }
 
