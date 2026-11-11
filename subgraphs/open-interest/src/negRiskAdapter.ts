@@ -129,22 +129,25 @@ export function handlePositionsConverted(event: PositionsConverted): void {
   if (noCount == 0 || amount.isZero()) return
 
   for (let i = 0; i < yesIds.length; i++) {
+    // YES is minted on chain even after the question was reported NO (worthless,
+    // but later redeemed for $0 and subtracted), so supplies always move.
+    updateSupplies(yesIds[i], amount, BigInt.zero(), true, event)
+    bumpConvertMint(yesIds[i], true, event)
     let q = getOrCreateQuestion(yesIds[i], event.params.marketId, yesQids[i])
     if (q.outcome == OUTCOME_NO) continue
     q.mintedRaw = q.mintedRaw.plus(amount)
     q.save()
     updateMarket(yesIds[i], amount, KIND_CONVERT, true, event)
-    updateSupplies(yesIds[i], amount, BigInt.zero(), true, event)
-    bumpConvertMint(yesIds[i], true, event)
   }
   for (let i = 0; i < noIds.length; i++) {
+    // NO is burned on chain even after the question was reported YES.
+    updateSupplies(noIds[i], BigInt.zero(), amount.neg(), true, event)
+    bumpConvertBurn(noIds[i], true, event)
     let q = getOrCreateQuestion(noIds[i], event.params.marketId, noQids[i])
     if (q.outcome == OUTCOME_YES) continue
     q.burnedRaw = q.burnedRaw.plus(amount)
     q.save()
     updateMarket(noIds[i], amount.neg(), KIND_CONVERT, true, event)
-    updateSupplies(noIds[i], BigInt.zero(), amount.neg(), true, event)
-    bumpConvertBurn(noIds[i], true, event)
   }
   if (noCount > 1) {
     // same rounding as Polymarket: fee and net parts released separately
