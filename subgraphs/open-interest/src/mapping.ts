@@ -1,4 +1,4 @@
-import { Address, BigInt } from "@graphprotocol/graph-ts"
+import { Address, BigInt, ethereum } from "@graphprotocol/graph-ts"
 import {
   ConditionPreparation,
   PositionSplit,
@@ -6,8 +6,8 @@ import {
   PayoutRedemption,
   ConditionResolution,
 } from "../generated/ConditionalTokens/ConditionalTokens"
-import { Condition, ConditionPayout, MarketOpenInterest } from "../generated/schema"
-import { USDC_E, ZERO_BYTES32, KIND_SPLIT, KIND_MERGE, KIND_REDEEM, isTrackedCondition, updateOpenInterest, updateSupplies, resolveMarket, redeemSupplies } from "./oi"
+import { Condition, ConditionPayout } from "../generated/schema"
+import { USDC_E, ZERO_BYTES32, KIND_SPLIT, KIND_MERGE, KIND_REDEEM, MarketWrite, trackedMarket, commitWithGlobal, resolveMarket } from "./oi"
 
 // Polymarket markets are binary conditions. Registering them here lets the
 // split/merge/redeem handlers skip arbitrary third-party conditions.
@@ -26,41 +26,49 @@ export function handleConditionPreparation(event: ConditionPreparation): void {
 //    the NegRiskAdapter; WMATIC and other tokens are not Polymarket collateral;
 //  - parentCollectionId must be zero. A nested split/merge/redeem moves outcome
 //    tokens of another condition, not collateral, so it does not change OI.
-function counts(conditionId: string, collateral: Address, parentIsZero: boolean): boolean {
-  if (!parentIsZero) return false
-  if (!collateral.equals(USDC_E)) return false
-  return isTrackedCondition(conditionId)
+// Returns the market loaded once for the whole event, or null to skip.
+function counts(conditionId: string, collateral: Address, parentIsZero: boolean, event: ethereum.Event): MarketWrite | null {
+  if (!parentIsZero) return null
+  if (!collateral.equals(USDC_E)) return null
+  return trackedMarket(conditionId, false, event)
 }
 
+// Each handler loads the market once, applies OI + supplies + counters in
+// memory and saves it once (MarketWrite.commit), then moves global OI.
 export function handlePositionSplit(event: PositionSplit): void {
-  let id = event.params.conditionId.toHexString()
-  if (!counts(id, event.params.collateralToken, event.params.parentCollectionId.equals(ZERO_BYTES32))) return
-  updateOpenInterest(id, event.params.amount, KIND_SPLIT, false, event)
-  updateSupplies(id, event.params.amount, event.params.amount, false, event)
+  let w = counts(event.params.conditionId.toHexString(), event.params.collateralToken, event.params.parentCollectionId.equals(ZERO_BYTES32), event)
+  if (w == null) return
+  let amount = event.params.amount
+  w.amount(amount, KIND_SPLIT)
+  w.supplies(amount, amount, false)
+  commitWithGlobal(w, amount, event)
 }
 
 export function handlePositionsMerge(event: PositionsMerge): void {
-  let id = event.params.conditionId.toHexString()
-  if (!counts(id, event.params.collateralToken, event.params.parentCollectionId.equals(ZERO_BYTES32))) return
-  updateOpenInterest(id, event.params.amount.neg(), KIND_MERGE, false, event)
-  updateSupplies(id, event.params.amount.neg(), event.params.amount.neg(), false, event)
+  let w = counts(event.params.conditionId.toHexString(), event.params.collateralToken, event.params.parentCollectionId.equals(ZERO_BYTES32), event)
+  if (w == null) return
+  let delta = event.params.amount.neg()
+  w.amount(delta, KIND_MERGE)
+  w.supplies(delta, delta, false)
+  commitWithGlobal(w, delta, event)
 }
 
 // PayoutRedemption(indexed redeemer, indexed collateralToken, indexed parentCollectionId,
 //                  conditionId, indexSets, payout). conditionId is NOT indexed.
 export function handlePayoutRedemption(event: PayoutRedemption): void {
-  let id = event.params.conditionId.toHexString()
-  if (!counts(id, event.params.collateralToken, event.params.parentCollectionId.equals(ZERO_BYTES32))) return
+  let w = counts(event.params.conditionId.toHexString(), event.params.collateralToken, event.params.parentCollectionId.equals(ZERO_BYTES32), event)
+  if (w == null) return
   let payout = event.params.payout
   if (payout.isZero()) {
     // A USDC.e redeem on a neg-risk condition (its real positions are
     // WrappedCollateral) burns nothing and pays nothing: do not count it.
-    let m = MarketOpenInterest.load(id)
+    let m = w.market
     if (m != null && m.negRisk) return
   }
-  updateOpenInterest(id, payout.neg(), KIND_REDEEM, false, event)
+  w.amount(payout.neg(), KIND_REDEEM)
   // The CTF event has no token amounts: derive burns from the payout numerators.
-  redeemSupplies(id, event.params.indexSets, payout, event)
+  w.redeem(event.params.indexSets, payout)
+  commitWithGlobal(w, payout.neg(), event)
 }
 
 // ConditionResolution(indexed conditionId, indexed oracle, indexed questionId,
