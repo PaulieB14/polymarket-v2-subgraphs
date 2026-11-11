@@ -79,12 +79,25 @@ export function handleNegRiskPositionsMerge(event: PositionsMerge): void {
 export function handleNegRiskPayoutRedemption(event: PayoutRedemption): void {
   let w = trackedMarket(event.params.conditionId.toHexString(), true, event)
   if (w == null) return
-  let delta = event.params.payout.neg()
-  w.amount(delta, KIND_REDEEM)
   // amounts[0] = YES tokens burned, amounts[1] = NO tokens burned
   let amounts = event.params.amounts
   let yesBurn = amounts.length > 0 ? amounts[0] : BigInt.zero()
   let noBurn = amounts.length > 1 ? amounts[1] : BigInt.zero()
+  // redeemPositions pays out the adapter's whole WCOL balance, so WCOL left in the adapter
+  // is swept to the redeemer on top of the burned tokens' value (e.g. tx 0x24bbad6a…4cdc,
+  // amounts [0,0], payout $816.84). Only the burned tokens' value leaves this market's OI.
+  let paid = event.params.payout
+  let m = w.market
+  if (m != null && m.resolved) {
+    let nums = m.payoutNumerators as BigInt[]
+    let den = nums[0].plus(nums[1])
+    if (!den.isZero()) {
+      let value = yesBurn.times(nums[0]).plus(noBurn.times(nums[1])).div(den)
+      if (paid.gt(value)) paid = value
+    }
+  }
+  let delta = paid.neg()
+  w.amount(delta, KIND_REDEEM)
   w.supplies(yesBurn.neg(), noBurn.neg(), true)
   commitWithGlobal(w, delta, event)
 }

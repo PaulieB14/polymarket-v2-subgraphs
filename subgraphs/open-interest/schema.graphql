@@ -21,6 +21,17 @@ type ConditionPayout @entity(immutable: true) {
   blockNumber: BigInt!
 }
 
+"""
+Polymarket V2 migration link (BinaryModule / NegRiskModule MigrationConditionRegistered).
+Two rows per registration: id = V2 condition id -> counterpart = legacy CTF condition id,
+and id = legacy CTF condition id -> counterpart = V2 condition id. V2 condition ids are the
+32-byte form Gamma uses (bytes31 ConditionId + zero outcome byte).
+"""
+type MigrationLink @entity(immutable: true) {
+  id: ID!
+  counterpart: Bytes!
+}
+
 "Neg-risk market (NegRiskAdapter marketId)"
 type NegRiskEvent @entity(immutable: false) {
   id: ID!                                    # marketId
@@ -64,9 +75,9 @@ event is fully reported and winning tokens are redeemed, it settles back in
 line with global OI.
 """
 type MarketOpenInterest @entity(immutable: false) {
-  id: ID!                                    # conditionId
+  id: ID!                                    # conditionId (V2: 32-byte Gamma conditionId, top byte = module id)
   conditionId: Bytes!
-  "USDC.e for both standard and neg-risk markets (neg-risk OI is tracked in USDC terms via the NegRiskAdapter)"
+  "USDC.e for legacy standard and neg-risk markets (neg-risk OI is tracked in USDC terms via the NegRiskAdapter); pUSD for Polymarket V2 PositionManager markets."
   collateralToken: Bytes!
   "True when the condition's oracle is the NegRiskAdapter (set at creation), regardless of which contract touched it first."
   negRisk: Boolean!

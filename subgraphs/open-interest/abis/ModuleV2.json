@@ -1,0 +1,242 @@
+[
+ {
+  "type": "event",
+  "name": "PositionsSplit",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "initiator",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "conditionId",
+    "type": "bytes31",
+    "indexed": true
+   },
+   {
+    "name": "recipient0",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "recipient1",
+    "type": "address",
+    "indexed": false
+   },
+   {
+    "name": "amount",
+    "type": "uint256",
+    "indexed": false
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "PositionsMerged",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "initiator",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "conditionId",
+    "type": "bytes31",
+    "indexed": true
+   },
+   {
+    "name": "recipient",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "amount",
+    "type": "uint256",
+    "indexed": false
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "PositionRedeemed",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "initiator",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "positionId",
+    "type": "uint256",
+    "indexed": true
+   },
+   {
+    "name": "recipient",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "amount",
+    "type": "uint256",
+    "indexed": false
+   },
+   {
+    "name": "payout",
+    "type": "uint256",
+    "indexed": false
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "ConditionResolved",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "conditionId",
+    "type": "bytes31",
+    "indexed": true
+   },
+   {
+    "name": "result",
+    "type": "uint256[]",
+    "indexed": false
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "HorizontalSplit",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "initiator",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "eventId",
+    "type": "bytes29",
+    "indexed": true
+   },
+   {
+    "name": "recipient",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "amount",
+    "type": "uint256",
+    "indexed": false
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "HorizontalMerge",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "initiator",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "eventId",
+    "type": "bytes29",
+    "indexed": true
+   },
+   {
+    "name": "recipient",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "amount",
+    "type": "uint256",
+    "indexed": false
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "RemainingConditionsDerivableAsNo",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "eventId",
+    "type": "bytes29",
+    "indexed": true
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "SyntheticConditionDerivableAsYes",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "eventId",
+    "type": "bytes29",
+    "indexed": true
+   },
+   {
+    "name": "conditionId",
+    "type": "bytes31",
+    "indexed": true
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "PositionMigrated",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "from",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "conditionId",
+    "type": "bytes31",
+    "indexed": true
+   },
+   {
+    "name": "positionId",
+    "type": "uint256",
+    "indexed": true
+   },
+   {
+    "name": "outcomeIndex",
+    "type": "uint256",
+    "indexed": false
+   },
+   {
+    "name": "amount",
+    "type": "uint256",
+    "indexed": false
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "MigrationConditionRegistered",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "v2ConditionId",
+    "type": "bytes31",
+    "indexed": true
+   },
+   {
+    "name": "legacyConditionId",
+    "type": "bytes32",
+    "indexed": true
+   }
+  ]
+ }
+]

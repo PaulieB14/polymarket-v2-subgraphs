@@ -1,0 +1,66 @@
+[
+ {
+  "type": "event",
+  "name": "TransferSingle",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "operator",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "from",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "to",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "id",
+    "type": "uint256",
+    "indexed": false
+   },
+   {
+    "name": "amount",
+    "type": "uint256",
+    "indexed": false
+   }
+  ]
+ },
+ {
+  "type": "event",
+  "name": "TransferBatch",
+  "anonymous": false,
+  "inputs": [
+   {
+    "name": "operator",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "from",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "to",
+    "type": "address",
+    "indexed": true
+   },
+   {
+    "name": "ids",
+    "type": "uint256[]",
+    "indexed": false
+   },
+   {
+    "name": "amounts",
+    "type": "uint256[]",
+    "indexed": false
+   }
+  ]
+ }
+]

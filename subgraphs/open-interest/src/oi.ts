@@ -6,8 +6,18 @@ import { Condition, ConditionPayout, MarketOpenInterest, OISnapshot, GlobalOpenI
 // splitting). Neg-risk markets use WrappedCollateral at the CTF and are counted via
 // the NegRiskAdapter instead. Anything else (WMATIC, pUSD or native USDC split
 // directly on CTF, random tokens) is ignored, so every amount here has 6 decimals.
-export const USDC_E = Address.fromString("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174")
-export const NEG_RISK_ADAPTER = Address.fromString("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296")
+// Address constants are built from bytes (no host call at module init).
+export const USDC_E = Address.fromBytes(Bytes.fromHexString("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"))
+export const NEG_RISK_ADAPTER = Address.fromBytes(Bytes.fromHexString("0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296"))
+// NegRiskAdapter.wcol() on Polygon: WrappedCollateral, the CTF collateral of neg-risk positions.
+export const WCOL = Address.fromBytes(Bytes.fromHexString("0x3A3BD7bb9528E159577F7C2e685CC81A765002E2"))
+// Polymarket V2 modules (PositionManager ModuleAdded ids 1 and 2). Both also migrate legacy
+// positions: they call the CTF directly (BinaryModule with USDC.e, NegRiskModule with WCOL)
+// to merge / redeem the legacy positions users hand over.
+export const BINARY_MODULE_V2 = Address.fromBytes(Bytes.fromHexString("0x1000008dD9001B968442c1000017eaE6E0dA00Ba"))
+export const NEG_RISK_MODULE_V2 = Address.fromBytes(Bytes.fromHexString("0x200000900045e3B6259600682756002200028933"))
+// pUSD (V2 CollateralToken): 6 decimals, 1:1 USD.
+export const PUSD = Address.fromBytes(Bytes.fromHexString("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"))
 export const ZERO_BYTES32 = Bytes.fromHexString(
   "0x0000000000000000000000000000000000000000000000000000000000000000"
 )
@@ -15,9 +25,9 @@ export const ZERO_BYTES32 = Bytes.fromHexString(
 const BD_ZERO = BigDecimal.zero()
 const BI_ZERO = BigInt.zero()
 const BI_ONE = BigInt.fromI32(1)
+const BI_TWO = BigInt.fromI32(2)
 // Precomputed 1e6 so toDecimal does not call BigInt.pow on the host for every update.
 const BD_1E6 = BigInt.fromI32(1000000).toBigDecimal()
-const HOUR_SECONDS = BigInt.fromI32(3600)
 const GLOBAL_ID = "global"
 
 export const KIND_SPLIT = 0
@@ -26,6 +36,8 @@ export const KIND_REDEEM = 2
 export const KIND_CONVERT = 3
 // settlement of conversion bookkeeping on OutcomeReported: moves OI, bumps no counter
 export const KIND_RESOLVE = 4
+// V2 migration: legacy collateral released by a V2 module moves to the V2 market (no counter)
+export const KIND_MIGRATE = 5
 
 function toDecimal(amount: BigInt): BigDecimal {
   return amount.toBigDecimal().div(BD_1E6)
@@ -78,7 +90,8 @@ function getOrCreateGlobal(): GlobalOpenInterest {
 function snapshot(market: MarketOpenInterest, event: ethereum.Event): void {
   // Deterministic id; every field is overwritten, so skip the load() and
   // construct a new entity. Same write order and values as before.
-  let id = market.id + "-" + event.block.timestamp.div(HOUR_SECONDS).toString()
+  // hour id from i64 arithmetic: same string as timestamp.div(3600).toString(), no host calls
+  let id = market.id + "-" + (event.block.timestamp.toI64() / 3600).toString()
   let snap = new OISnapshot(id)
   snap.market = market.id
   snap.amount = market.amount
@@ -108,12 +121,24 @@ export class MarketWrite {
   suppliesDirty: boolean = false
   touched: boolean = false
   snap: boolean = false
+  /** CTF event in WrappedCollateral by a caller other than the NegRiskAdapter (direct split /
+   *  merge / redeem of the traded neg-risk tokens). Its supplies count like adapter ones. */
+  wcol: boolean = false
 
   constructor(id: string, market: MarketOpenInterest | null, negRisk: boolean, event: ethereum.Event) {
     this.id = id
     this.market = market
     this.negRisk = negRisk
     this.event = event
+  }
+
+  /** Neg-risk per the stored market, or per the condition's oracle before creation. */
+  isNegRisk(): boolean {
+    let m = this.market
+    if (m != null) return m.negRisk
+    let c = this.cond
+    if (c == null) return false
+    return Address.fromBytes(c.oracle).equals(NEG_RISK_ADAPTER)
   }
 
   private ensure(): MarketOpenInterest {
@@ -194,15 +219,31 @@ export class MarketWrite {
   redeem(indexSets: BigInt[], payout: BigInt): void {
     if (payout.isZero()) return
     let m = this.market
-    if (m == null || !m.resolved || m.negRisk) return
+    // Neg-risk positions are WCOL: only a direct (non-adapter) WCOL redemption burns them here.
+    if (m == null || !m.resolved || (m.negRisk && !this.wcol)) return
     let nums = m.payoutNumerators as BigInt[]
-    let den = nums[0].plus(nums[1])
     let yesIn = false
     let noIn = false
     for (let i = 0; i < indexSets.length; i++) {
       if (indexSets[i].equals(BI_ONE)) yesIn = true
-      else if (indexSets[i].equals(BigInt.fromI32(2))) noIn = true
+      else if (indexSets[i].equals(BI_TWO)) noIn = true
     }
+    // [1,0] / [0,1]: the winning tokens burned == payout (losing side is pinned at 0).
+    // Same result as the proportional formula below, without the BigInt host calls.
+    if (nums[0].isZero() || nums[1].isZero()) {
+      let yesWins = nums[1].isZero()
+      if (yesWins ? !yesIn : !noIn) return
+      let supply = yesWins ? m.yesSupplyRaw : m.noSupplyRaw
+      let burned = payout.gt(supply) ? supply : payout
+      if (burned.le(BI_ZERO)) return
+      if (yesWins) m.yesSupplyRaw = m.yesSupplyRaw.minus(burned)
+      else m.noSupplyRaw = m.noSupplyRaw.minus(burned)
+      this.suppliesDirty = true
+      this.touch(m)
+      this.dirty = true
+      return
+    }
+    let den = nums[0].plus(nums[1])
     let wy = yesIn ? m.yesSupplyRaw.times(nums[0]) : BI_ZERO
     let wn = noIn ? m.noSupplyRaw.times(nums[1]) : BI_ZERO
     let weighted = wy.plus(wn)
