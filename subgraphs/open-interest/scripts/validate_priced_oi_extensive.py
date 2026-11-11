@@ -957,10 +957,25 @@ def replay_market(logs_rpc: RPC, m: dict, conversions: list[dict], end_block: in
             yes_red += y
             no_red += n
         ctf_split_wcol = ctf_merge_wcol = 0
+        # Direct USDC.e CTF split/merge on a neg-risk condition: the mapping counts them in
+        # `amount`, splitCount and mergeCount (never in supplies). Mirror that rule (A.3).
+        usdc_split = usdc_merge = n_usdc_split = n_usdc_merge = 0
+        # Direct WCOL CTF split/merge by a caller other than the adapter (A.1): counted in
+        # amount, counters and both supplies. (Direct WCOL redemptions are not fetched here.)
+        dw_split = dw_merge = n_dw_split = n_dw_merge = 0
         # WCOL address discovered at runtime, stored on first market
         wcol = m.get("wcol")
+        def direct(lg):
+            return ("0x" + lg["topics"][1][-40:]).lower() != ADAPTER.lower()
         for lg in ctf_splits:
             coll, amt = parse_ctf_split_merge(lg)
+            if coll.lower() == USDC_E.lower():
+                usdc_split += amt
+                n_usdc_split += 1
+                continue
+            if direct(lg):
+                dw_split += amt
+                n_dw_split += 1
             if wcol and coll.lower() == wcol.lower():
                 ctf_split_wcol += amt
             elif not wcol:
@@ -969,6 +984,13 @@ def replay_market(logs_rpc: RPC, m: dict, conversions: list[dict], end_block: in
                     ctf_split_wcol += amt
         for lg in ctf_merges:
             coll, amt = parse_ctf_split_merge(lg)
+            if coll.lower() == USDC_E.lower():
+                usdc_merge += amt
+                n_usdc_merge += 1
+                continue
+            if direct(lg):
+                dw_merge += amt
+                n_dw_merge += 1
             if wcol and coll.lower() == wcol.lower():
                 ctf_merge_wcol += amt
             elif not wcol and coll.lower() != USDC_E.lower():
@@ -977,12 +999,17 @@ def replay_market(logs_rpc: RPC, m: dict, conversions: list[dict], end_block: in
         bit = 1 << int(m.get("index", 0))
         minted = burned = 0
         mint_n = burn_n = 0
+        # NO that reaches NO_TOKEN_BURN_ADDRESS: every conversion sends the caller's NO
+        # (converted side) and the freshly split NO (complement side) there, reported or not
+        # (NegRiskAdapter.convertPositions has no report check) (A.4).
+        to_burn = 0
         reported = m.get("reportedAtBlock")
         outcome = m.get("outcome") or 0
         for ev in conversions:
             if ev["block"] < start or ev["block"] > end_block:
                 continue
             in_set = bool(ev["indexSet"] & bit)
+            to_burn += ev["amount"]
             # skip post-report sides the handler ignores
             if reported and ev["block"] > reported:
                 if outcome == 1 and in_set:
@@ -996,8 +1023,8 @@ def replay_market(logs_rpc: RPC, m: dict, conversions: list[dict], end_block: in
                 minted += ev["amount"]
                 mint_n += 1
 
-        net = split_amt - merge_amt
-        amount = net - redeem_payout + minted - burned
+        net = split_amt - merge_amt + dw_split - dw_merge
+        amount = net + (usdc_split - usdc_merge) - redeem_payout + minted - burned
         # OutcomeReported settlement (only if report is at or before end_block)
         if reported and reported <= end_block:
             if outcome == 2:  # NO: remove minted YES from amount
@@ -1007,7 +1034,14 @@ def replay_market(logs_rpc: RPC, m: dict, conversions: list[dict], end_block: in
         yes = net + minted - yes_red
         no = net - burned - no_red
         return {
-            "splitCount": len(splits), "mergeCount": len(merges), "redeemCount": len(redeems),
+            "splitCount": len(splits) + n_usdc_split + n_dw_split,
+            "mergeCount": len(merges) + n_usdc_merge + n_dw_merge,
+            "redeemCount": len(redeems),
+            "usdcStraySplit": usdc_split, "usdcStrayMerge": usdc_merge,
+            "directWcolSplit": dw_split, "directWcolMerge": dw_merge,
+            # high-volume markets skip the CTF fetch: their stray USDC.e / direct WCOL is unknown
+            "ctfSkipped": not do_ctf,
+            "toBurn": to_burn,
             "convertMintCount": mint_n, "convertBurnCount": burn_n,
             "splitAmt": split_amt, "mergeAmt": merge_amt, "redeemPayout": redeem_payout,
             "yesRedeemed": yes_red, "noRedeemed": no_red,
@@ -1590,7 +1624,7 @@ def main() -> int:
             if a is None or b is None:
                 return None
             return a - b
-        expected_burn = (rpl.get("minted") or 0) + (rpl.get("burned") or 0) if m.get("negRisk") else 0
+        expected_burn = (rpl.get("toBurn") or 0) if m.get("negRisk") else 0
         sg_amt = int(m["sg"]["amountRaw"])
         row = {
             "name": m["name"], "id": m["conditionId"], "tags": m.get("tags", []),

@@ -1,4 +1,4 @@
-specVersion: 1.0.0
+specVersion: 1.2.0
 indexerHints:
   prune: auto
 schema:
@@ -23,6 +23,7 @@ dataSources:
       entities:
         - Condition
         - ConditionPayout
+        - MigrationLink
         - MarketOpenInterest
         - OISnapshot
         - GlobalOpenInterest
@@ -81,3 +82,141 @@ dataSources:
         - event: OutcomeReported(indexed bytes32,indexed bytes32,bool)
           handler: handleOutcomeReported
       file: ./src/negRiskAdapter.ts
+  # Polymarket V2 (Polymarket/polymarket-v2-external). New V2 markets (Gamma "polyv2-*")
+  # and positions migrated out of legacy CTF / NegRiskAdapter markets live in the
+  # PositionManager ERC1155, not in the CTF. Supplies come from its mints (from = 0) and
+  # burns (to = 0), which every module path goes through; topic filters keep user-to-user
+  # transfers out (specVersion 1.2.0). Collateral (pUSD, 6dp) comes from the module events.
+  # startBlock = first ModuleAdded on the PositionManager (BinaryModule, block 87,479,608).
+  - kind: ethereum
+    name: PositionManagerV2Mints
+    network: matic
+    source:
+      address: "0x006F54F7f9A22e0000CC2AB60031000000ae9fEF"
+      abi: PositionManagerV2
+      startBlock: 87479608
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - MarketOpenInterest
+        - ConditionPayout
+        - MigrationLink
+        - OISnapshot
+        - GlobalOpenInterest
+      abis:
+        - name: PositionManagerV2
+          file: ./abis/PositionManagerV2.json
+      eventHandlers:
+        - event: TransferSingle(indexed address,indexed address,indexed address,uint256,uint256)
+          handler: handleV2Mint
+          topic2: ["0x0000000000000000000000000000000000000000000000000000000000000000"]
+        - event: TransferBatch(indexed address,indexed address,indexed address,uint256[],uint256[])
+          handler: handleV2MintBatch
+          topic2: ["0x0000000000000000000000000000000000000000000000000000000000000000"]
+      file: ./src/v2.ts
+  - kind: ethereum
+    name: PositionManagerV2Burns
+    network: matic
+    source:
+      address: "0x006F54F7f9A22e0000CC2AB60031000000ae9fEF"
+      abi: PositionManagerV2
+      startBlock: 87479608
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - MarketOpenInterest
+        - ConditionPayout
+        - MigrationLink
+        - OISnapshot
+        - GlobalOpenInterest
+      abis:
+        - name: PositionManagerV2
+          file: ./abis/PositionManagerV2.json
+      eventHandlers:
+        - event: TransferSingle(indexed address,indexed address,indexed address,uint256,uint256)
+          handler: handleV2Burn
+          topic3: ["0x0000000000000000000000000000000000000000000000000000000000000000"]
+        - event: TransferBatch(indexed address,indexed address,indexed address,uint256[],uint256[])
+          handler: handleV2BurnBatch
+          topic3: ["0x0000000000000000000000000000000000000000000000000000000000000000"]
+      file: ./src/v2.ts
+  - kind: ethereum
+    name: BinaryModuleV2
+    network: matic
+    source:
+      address: "0x1000008dD9001B968442c1000017eaE6E0dA00Ba"
+      abi: ModuleV2
+      startBlock: 87479608
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - MarketOpenInterest
+        - ConditionPayout
+        - MigrationLink
+        - OISnapshot
+        - GlobalOpenInterest
+      abis:
+        - name: ModuleV2
+          file: ./abis/ModuleV2.json
+      eventHandlers:
+        - event: PositionsSplit(indexed address,indexed bytes31,indexed address,address,uint256)
+          handler: handleV2Split
+        - event: PositionsMerged(indexed address,indexed bytes31,indexed address,uint256)
+          handler: handleV2Merge
+        - event: PositionRedeemed(indexed address,indexed uint256,indexed address,uint256,uint256)
+          handler: handleV2Redeem
+        - event: ConditionResolved(indexed bytes31,uint256[])
+          handler: handleV2ConditionResolved
+        - event: MigrationConditionRegistered(indexed bytes31,indexed bytes32)
+          handler: handleV2MigrationRegistered
+        - event: PositionMigrated(indexed address,indexed bytes31,indexed uint256,uint256,uint256)
+          handler: handleV2PositionMigrated
+      file: ./src/v2.ts
+  - kind: ethereum
+    name: NegRiskModuleV2
+    network: matic
+    source:
+      address: "0x200000900045e3B6259600682756002200028933"
+      abi: ModuleV2
+      startBlock: 87479608
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.7
+      language: wasm/assemblyscript
+      entities:
+        - MarketOpenInterest
+        - ConditionPayout
+        - MigrationLink
+        - OISnapshot
+        - GlobalOpenInterest
+      abis:
+        - name: ModuleV2
+          file: ./abis/ModuleV2.json
+      eventHandlers:
+        - event: PositionsSplit(indexed address,indexed bytes31,indexed address,address,uint256)
+          handler: handleV2Split
+        - event: PositionsMerged(indexed address,indexed bytes31,indexed address,uint256)
+          handler: handleV2Merge
+        - event: PositionRedeemed(indexed address,indexed uint256,indexed address,uint256,uint256)
+          handler: handleV2Redeem
+        - event: ConditionResolved(indexed bytes31,uint256[])
+          handler: handleV2ConditionResolved
+        - event: MigrationConditionRegistered(indexed bytes31,indexed bytes32)
+          handler: handleV2MigrationRegistered
+        - event: PositionMigrated(indexed address,indexed bytes31,indexed uint256,uint256,uint256)
+          handler: handleV2PositionMigrated
+        - event: HorizontalSplit(indexed address,indexed bytes29,indexed address,uint256)
+          handler: handleV2HorizontalSplit
+        - event: HorizontalMerge(indexed address,indexed bytes29,indexed address,uint256)
+          handler: handleV2HorizontalMerge
+        - event: RemainingConditionsDerivableAsNo(indexed bytes29)
+          handler: handleV2RemainingNo
+        - event: SyntheticConditionDerivableAsYes(indexed bytes29,indexed bytes31)
+          handler: handleV2OtherYes
+      file: ./src/v2.ts
