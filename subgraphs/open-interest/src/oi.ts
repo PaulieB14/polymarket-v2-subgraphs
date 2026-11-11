@@ -1,5 +1,5 @@
 import { Address, BigDecimal, BigInt, Bytes, ethereum } from "@graphprotocol/graph-ts"
-import { Condition, MarketOpenInterest, OISnapshot, GlobalOpenInterest } from "../generated/schema"
+import { Condition, ConditionPayout, MarketOpenInterest, OISnapshot, GlobalOpenInterest } from "../generated/schema"
 
 // Only collateral counted at the CTF level. Everything Polymarket lists settles in
 // USDC.e at the CTF (V2's CtfCollateralAdapter unwraps pUSD -> USDC.e before
@@ -49,7 +49,18 @@ function getOrCreateMarket(conditionId: string, negRisk: boolean, event: ethereu
     market = new MarketOpenInterest(conditionId)
     market.conditionId = Bytes.fromHexString(conditionId)
     market.collateralToken = USDC_E
-    market.negRisk = negRisk
+    // negRisk follows the condition's oracle, not which contract touched it first
+    // (a stray direct USDC.e split on a neg-risk condition used to flag it false).
+    // One Condition / ConditionPayout load per market creation only.
+    let cond = Condition.load(conditionId)
+    market.negRisk = negRisk || (cond != null && Address.fromBytes(cond.oracle).equals(NEG_RISK_ADAPTER))
+    market.resolved = false
+    let payout = ConditionPayout.load(conditionId)
+    if (payout != null) {
+      market.resolved = true
+      market.payoutNumerators = payout.payoutNumerators
+      market.resolvedAtBlock = payout.blockNumber
+    }
     market.amount = BD_ZERO
     market.amountRaw = BI_ZERO
     market.yesSupply = BD_ZERO
@@ -145,6 +156,17 @@ export function updateSupplies(conditionId: string, yesDelta: BigInt, noDelta: B
   // Creating a market with a zero-amount, zero-supply first touch is still
   // skipped by updateMarket; a non-zero supply delta is a real market.
   let market = getOrCreateMarket(conditionId, negRisk, event)
+  // `negRisk` here says which path called: true = NegRiskAdapter (WrappedCollateral
+  // positions), false = direct CTF with USDC.e. On a neg-risk condition the USDC.e
+  // positions are different tokens from the ones Polymarket trades: skip them.
+  if (!negRisk && market.negRisk) return
+  // Resolved: a side with payout numerator 0 is worthless and pinned at 0.
+  if (market.resolved) {
+    let nums = market.payoutNumerators as BigInt[]
+    if (nums[0].isZero()) yesDelta = BI_ZERO
+    if (nums[1].isZero()) noDelta = BI_ZERO
+    if (yesDelta.isZero() && noDelta.isZero()) return
+  }
   market.yesSupplyRaw = market.yesSupplyRaw.plus(yesDelta)
   market.noSupplyRaw = market.noSupplyRaw.plus(noDelta)
   market.yesSupply = toDecimal(market.yesSupplyRaw)
@@ -163,5 +185,61 @@ export function bumpConvertMint(conditionId: string, negRisk: boolean, event: et
 export function bumpConvertBurn(conditionId: string, negRisk: boolean, event: ethereum.Event): void {
   let market = getOrCreateMarket(conditionId, negRisk, event)
   market.convertBurnCount = market.convertBurnCount.plus(BI_ONE)
+  market.save()
+}
+
+/**
+ * CTF ConditionResolution on a market we track: mark it resolved and zero the
+ * worthless side(s). Does not touch `amount` or global OI.
+ */
+export function resolveMarket(conditionId: string, nums: BigInt[], event: ethereum.Event): void {
+  let market = MarketOpenInterest.load(conditionId)
+  if (market == null) return
+  market.resolved = true
+  market.payoutNumerators = nums
+  market.resolvedAtBlock = event.block.number
+  if (nums[0].isZero()) market.yesSupplyRaw = BI_ZERO
+  if (nums[1].isZero()) market.noSupplyRaw = BI_ZERO
+  market.yesSupply = toDecimal(market.yesSupplyRaw)
+  market.noSupply = toDecimal(market.noSupplyRaw)
+  market.save()
+}
+
+/**
+ * Supplies for a CTF (USDC.e) PayoutRedemption, which reports only the payout.
+ * Burned tokens are derived from the payout numerators: with [1,0] / [0,1] the
+ * winning tokens burned == payout exactly (losing side is already 0). For split
+ * payouts the burned tokens are allocated over the redeemed paying sides in
+ * proportion to their supplies. Burns are clamped to the current supply.
+ */
+export function redeemSupplies(conditionId: string, indexSets: BigInt[], payout: BigInt, event: ethereum.Event): void {
+  if (payout.isZero()) return
+  let market = MarketOpenInterest.load(conditionId)
+  if (market == null || !market.resolved || market.negRisk) return
+  let nums = market.payoutNumerators as BigInt[]
+  let den = nums[0].plus(nums[1])
+  let yesIn = false
+  let noIn = false
+  for (let i = 0; i < indexSets.length; i++) {
+    if (indexSets[i].equals(BI_ONE)) yesIn = true
+    else if (indexSets[i].equals(BigInt.fromI32(2))) noIn = true
+  }
+  let wy = yesIn ? market.yesSupplyRaw.times(nums[0]) : BI_ZERO
+  let wn = noIn ? market.noSupplyRaw.times(nums[1]) : BI_ZERO
+  let weighted = wy.plus(wn)
+  if (weighted.le(BI_ZERO)) return
+  let yb = BI_ZERO
+  let nb = BI_ZERO
+  if (wy.gt(BI_ZERO)) yb = payout.times(den).times(market.yesSupplyRaw).div(weighted)
+  if (wn.gt(BI_ZERO)) nb = payout.times(den).times(market.noSupplyRaw).div(weighted)
+  if (yb.gt(market.yesSupplyRaw)) yb = market.yesSupplyRaw
+  if (nb.gt(market.noSupplyRaw)) nb = market.noSupplyRaw
+  if (yb.isZero() && nb.isZero()) return
+  market.yesSupplyRaw = market.yesSupplyRaw.minus(yb)
+  market.noSupplyRaw = market.noSupplyRaw.minus(nb)
+  market.yesSupply = toDecimal(market.yesSupplyRaw)
+  market.noSupply = toDecimal(market.noSupplyRaw)
+  market.lastUpdatedBlock = event.block.number
+  market.lastUpdatedTimestamp = event.block.timestamp
   market.save()
 }

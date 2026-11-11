@@ -4,9 +4,10 @@ import {
   PositionSplit,
   PositionsMerge,
   PayoutRedemption,
+  ConditionResolution,
 } from "../generated/ConditionalTokens/ConditionalTokens"
-import { Condition } from "../generated/schema"
-import { USDC_E, ZERO_BYTES32, KIND_SPLIT, KIND_MERGE, KIND_REDEEM, isTrackedCondition, updateOpenInterest, updateSupplies } from "./oi"
+import { Condition, ConditionPayout, MarketOpenInterest } from "../generated/schema"
+import { USDC_E, ZERO_BYTES32, KIND_SPLIT, KIND_MERGE, KIND_REDEEM, isTrackedCondition, updateOpenInterest, updateSupplies, resolveMarket, redeemSupplies } from "./oi"
 
 // Polymarket markets are binary conditions. Registering them here lets the
 // split/merge/redeem handlers skip arbitrary third-party conditions.
@@ -50,14 +51,29 @@ export function handlePositionsMerge(event: PositionsMerge): void {
 export function handlePayoutRedemption(event: PayoutRedemption): void {
   let id = event.params.conditionId.toHexString()
   if (!counts(id, event.params.collateralToken, event.params.parentCollectionId.equals(ZERO_BYTES32))) return
-  updateOpenInterest(id, event.params.payout.neg(), KIND_REDEEM, false, event)
-  // The CTF event does not include token amounts. When payout > 0 and a single
-  // index set is redeemed, payout equals tokens burned if that outcome paid $1.
-  // Zero-payout (losing) redemptions cannot be reflected in supplies.
   let payout = event.params.payout
-  if (!payout.isZero() && event.params.indexSets.length == 1) {
-    let set = event.params.indexSets[0]
-    if (set.equals(BigInt.fromI32(1))) updateSupplies(id, payout.neg(), BigInt.zero(), false, event)
-    else if (set.equals(BigInt.fromI32(2))) updateSupplies(id, BigInt.zero(), payout.neg(), false, event)
+  if (payout.isZero()) {
+    // A USDC.e redeem on a neg-risk condition (its real positions are
+    // WrappedCollateral) burns nothing and pays nothing: do not count it.
+    let m = MarketOpenInterest.load(id)
+    if (m != null && m.negRisk) return
   }
+  updateOpenInterest(id, payout.neg(), KIND_REDEEM, false, event)
+  // The CTF event has no token amounts: derive burns from the payout numerators.
+  redeemSupplies(id, event.params.indexSets, payout, event)
+}
+
+// ConditionResolution(indexed conditionId, indexed oracle, indexed questionId,
+//                     outcomeSlotCount, payoutNumerators). Fires for neg-risk
+// questions too (the adapter reports payouts to the CTF in reportOutcome).
+export function handleConditionResolution(event: ConditionResolution): void {
+  let nums = event.params.payoutNumerators
+  if (nums.length != 2) return
+  let id = event.params.conditionId.toHexString()
+  if (Condition.load(id) == null) return
+  let r = new ConditionPayout(id)
+  r.payoutNumerators = nums
+  r.blockNumber = event.block.number
+  r.save()
+  resolveMarket(id, nums, event)
 }

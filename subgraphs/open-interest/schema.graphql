@@ -10,6 +10,17 @@ type Condition @entity(immutable: true) {
   createdAtBlock: BigInt!
 }
 
+"""
+CTF ConditionResolution for a registered binary condition (written once). Lets a
+market created after resolution start out resolved.
+"""
+type ConditionPayout @entity(immutable: true) {
+  id: ID!                                    # conditionId
+  "[yes, no] payout numerators; denominator = yes + no"
+  payoutNumerators: [BigInt!]!
+  blockNumber: BigInt!
+}
+
 "Neg-risk market (NegRiskAdapter marketId)"
 type NegRiskEvent @entity(immutable: false) {
   id: ID!                                    # marketId
@@ -57,17 +68,39 @@ type MarketOpenInterest @entity(immutable: false) {
   conditionId: Bytes!
   "USDC.e for both standard and neg-risk markets (neg-risk OI is tracked in USDC terms via the NegRiskAdapter)"
   collateralToken: Bytes!
+  "True when the condition's oracle is the NegRiskAdapter (set at creation), regardless of which contract touched it first."
   negRisk: Boolean!
   amount: BigDecimal!                        # unpriced collateral attribution, 6 decimals
   amountRaw: BigInt!
-  "Circulating YES outcome-token supply (6 decimals). Includes YES minted by convertPositions. Tokens at the NO burn address are excluded."
+  """
+  Circulating YES outcome-token supply (6 decimals). Includes YES minted by
+  convertPositions; NO at the adapter burn address is excluded. Once the market is
+  resolved a side with payout numerator 0 is worthless and is pinned to 0 (it is
+  set to 0 at resolution and later mints/burns on it are ignored); a paying side
+  is the outstanding unredeemed supply. Neg-risk redemptions give exact token
+  amounts. CTF redemptions only give the payout, so burns are derived from it:
+  for [1,0] / [0,1] the winning tokens burned == payout exactly; for split payouts
+  (e.g. [1,1]) the burned tokens (payout * den / weighted) are allocated across the
+  redeemed sides in proportion to their supplies (approximation). On neg-risk
+  questions only adapter (WrappedCollateral) activity moves supplies; direct CTF
+  activity with USDC.e on a neg-risk condition uses different position ids and is
+  ignored for supplies (it still counts in `amount`).
+  Priced OI = yesSupply * p + noSupply * (1 - p); after resolution this equals
+  the outstanding payout value with p = yes numerator / denominator.
+  """
   yesSupply: BigDecimal!
   yesSupplyRaw: BigInt!
-  "Circulating NO outcome-token supply (6 decimals). NO sent to the adapter burn address is excluded."
+  "Circulating NO outcome-token supply (6 decimals). Same rules as yesSupply."
   noSupply: BigDecimal!
   noSupplyRaw: BigInt!
+  "True once the CTF reported payouts for this condition (ConditionResolution)."
+  resolved: Boolean!
+  "[yes, no] payout numerators from ConditionResolution; null while unresolved."
+  payoutNumerators: [BigInt!]
+  resolvedAtBlock: BigInt
   splitCount: BigInt!
   mergeCount: BigInt!
+  "Redemptions that touched this market. Zero-payout USDC.e CTF redemptions on neg-risk conditions (no-op calls on positions that do not exist) are not counted."
   redemptionCount: BigInt!
   "Incremented on every PositionsConverted in this question's event (both mint and burn sides), so it is identical across questions of the same event."
   conversionCount: BigInt!
