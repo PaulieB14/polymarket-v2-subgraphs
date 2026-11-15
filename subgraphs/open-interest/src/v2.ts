@@ -101,12 +101,15 @@ function maxBI(a: BigInt, b: BigInt): BigInt {
  * CombinatorialModule extract / unwrap / inject / wrap mints or burns Binary and
  * NegRisk tokens without BinaryModule / NegRiskModule PositionsSplit or
  * PositionsMerged. Credit or debit `amount` for those tokens, pairing YES and NO
- * in the same transaction so a complete set is counted once (max of the two sides).
+ * across the market's lifetime so a complete set is counted once (max of the two
+ * sides). Same-transaction and cross-transaction unwraps use the same accumulator;
+ * a per-transaction max() would double-credit a set completed in a later tx
+ * (YES in tx1 + NO in tx2 + merge = leftover amount).
  * Mints from BinaryModule / NegRiskModule are already covered by PositionsSplit
  * or migration settlement and must not be credited here.
  */
 function applyComboAmount(cid: string, negRisk: boolean, outcome: u8, delta: BigInt, event: ethereum.Event): void {
-  let id = event.transaction.hash.toHexString() + "-" + cid
+  let id = cid
   let c = V2ComboCredit.load(id)
   if (c == null) {
     c = new V2ComboCredit(id)

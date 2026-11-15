@@ -114,7 +114,7 @@ from.
 - `MarketOpenInterest`: per-condition collateral `amount`, circulating `yesSupply` / `noSupply`, split, merge, redemption, and conversion counts, `negRisk` flag
 - `ConditionPayout`: resolution payouts (CTF ConditionResolution, V2 ConditionResolved / derived results)
 - `MigrationLink`: V2 condition id <-> legacy CTF condition id
-- `V2ComboCredit`: per-transaction accumulator so a CombinatorialModule YES+NO mint credits `amount` once
+- `V2ComboCredit`: per-market accumulator so a CombinatorialModule YES+NO mint (same tx or across txs) credits `amount` once
 - `OISnapshot`: hourly per-market snapshots
 - `GlobalOpenInterest`: platform total (`id: "global"`)
 

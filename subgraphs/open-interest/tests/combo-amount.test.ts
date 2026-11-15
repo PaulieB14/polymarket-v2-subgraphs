@@ -1,9 +1,9 @@
 import { assert, beforeEach, clearStore, describe, newMockEvent, test } from "matchstick-as/assembly/index"
 import { Address, BigInt, Bytes, ethereum } from "@graphprotocol/graph-ts"
-import { TransferSingle } from "../generated/PositionManagerV2Mints/PositionManagerV2"
+import { TransferSingle, TransferBatch } from "../generated/PositionManagerV2Mints/PositionManagerV2"
 import { PositionsSplit, PositionsMerged } from "../generated/NegRiskModuleV2/ModuleV2"
 import { MarketOpenInterest } from "../generated/schema"
-import { handleV2Mint, handleV2Burn, handleV2Split, handleV2Merge } from "../src/v2"
+import { handleV2Mint, handleV2Burn, handleV2MintBatch, handleV2Split, handleV2Merge } from "../src/v2"
 import { eq, globalRaw } from "./nr-helpers"
 
 const BIN_MOD = Address.fromString("0x1000008dd9001b968442c1000017eae6e0da00ba")
@@ -161,5 +161,116 @@ describe("CombinatorialModule credits amount on extract/unwrap (v0.0.10)", () =>
     assert.fieldEquals("MarketOpenInterest", cid, "splitCount", "1")
     assert.fieldEquals("MarketOpenInterest", cid, "mergeCount", "1")
     assert.fieldEquals("MarketOpenInterest", cid, "negRisk", "false")
+  })
+
+  test("partial unwrap of YES only credits that side and leaves noSupply 0", () => {
+    const cid = "0x02283c1f0efd13fd95a87ce05952727100000300000000000000000000000000"
+    const hash = Bytes.fromHexString("0x0c1d7c641eba138578999559a9dc5618f3af9239616949ed52c2175190c7471f")
+    const amt: i64 = 1000000000
+    mint(COMBO, pid(cid, 0), amt, hash)
+    eq(n(amt), m(cid).amountRaw, "partial unwrap credits amount")
+    eq(n(amt), m(cid).yesSupplyRaw, "yes")
+    eq(n(0), m(cid).noSupplyRaw, "no still 0")
+    eq(n(amt), globalRaw(), "global")
+  })
+
+  test("uneven same-tx unwrap credits max(yes, no), not the sum", () => {
+    const cid = "0x01b927b8d163079155f37e7f5c5d9261ba000000000000000000000000000000"
+    const hash = Bytes.fromHexString("0xd8fb9200db598d711b4f746c9ae4893e9e7c91927405c6204f6ba39c7eb447a3")
+    mint(COMBO, pid(cid, 0), 3000000, hash)
+    mint(COMBO, pid(cid, 1), 1000000, hash)
+    eq(n(3000000), m(cid).amountRaw, "max(3, 1) = 3, not 4")
+    eq(n(3000000), m(cid).yesSupplyRaw, "yes 3")
+    eq(n(1000000), m(cid).noSupplyRaw, "no 1")
+  })
+
+  test("multiple merges in one tx debit each merge and leave the leftover", () => {
+    const cid = CID_BOTH
+    const hash = TX_BOTH
+    mint(COMBO, pid(cid, 0), 2000000000, hash)
+    mint(COMBO, pid(cid, 1), 2000000000, hash)
+    burn(NR_MOD, pid(cid, 0), 500000000, hash)
+    burn(NR_MOD, pid(cid, 1), 500000000, hash)
+    merge(cid, 500000000, hash)
+    burn(NR_MOD, pid(cid, 0), 700000000, hash)
+    burn(NR_MOD, pid(cid, 1), 700000000, hash)
+    merge(cid, 700000000, hash)
+    eq(n(800000000), m(cid).amountRaw, "2000 - 500 - 700 = 800")
+    eq(n(800000000), m(cid).yesSupplyRaw, "yes leftover")
+    eq(n(800000000), m(cid).noSupplyRaw, "no leftover")
+    assert.fieldEquals("MarketOpenInterest", cid, "mergeCount", "2")
+  })
+
+  test("zero-amount combo mint does not create a market or move global", () => {
+    const cid = CID_BOTH
+    const hash = TX_BOTH
+    mint(COMBO, pid(cid, 0), 0, hash)
+    assert.entityCount("MarketOpenInterest", 0)
+    eq(n(0), globalRaw(), "global stays 0")
+  })
+
+  test("zero-amount merge on an existing market bumps mergeCount only", () => {
+    mint(COMBO, pid(CID_BOTH, 0), AMT_BOTH, TX_BOTH)
+    mint(COMBO, pid(CID_BOTH, 1), AMT_BOTH, TX_BOTH)
+    merge(CID_BOTH, 0, TX_BOTH)
+    eq(n(AMT_BOTH), m(CID_BOTH).amountRaw, "amount unchanged")
+    assert.fieldEquals("MarketOpenInterest", CID_BOTH, "mergeCount", "1")
+  })
+
+  test("module 3 position ids are ignored even when the operator is CombinatorialModule", () => {
+    // module byte 3, otherwise the same layout as CID_BOTH
+    const comboPid = pid(CID_BOTH, 0).plus(BigInt.fromI32(1).leftShift(248)) // 0x02 -> 0x03
+    mint(COMBO, comboPid, AMT_BOTH, TX_BOTH)
+    assert.entityCount("MarketOpenInterest", 0)
+    eq(n(0), globalRaw(), "global 0")
+  })
+
+  test("TransferBatch YES+NO from CombinatorialModule credits amount once", () => {
+    const cid = CID_BOTH
+    const hash = TX_BOTH
+    let e = changetype<TransferBatch>(newMockEvent())
+    e.transaction.hash = hash
+    e.parameters = [
+      p("operator", ethereum.Value.fromAddress(COMBO)),
+      p("from", ethereum.Value.fromAddress(ZERO)),
+      p("to", ethereum.Value.fromAddress(USER)),
+      p("ids", ethereum.Value.fromUnsignedBigIntArray([pid(cid, 0), pid(cid, 1)])),
+      p("amounts", ethereum.Value.fromUnsignedBigIntArray([n(AMT_BOTH), n(AMT_BOTH)])),
+    ]
+    handleV2MintBatch(e)
+    eq(n(AMT_BOTH), m(cid).amountRaw, "batch credits once")
+    eq(n(AMT_BOTH), m(cid).yesSupplyRaw, "yes")
+    eq(n(AMT_BOTH), m(cid).noSupplyRaw, "no")
+  })
+
+  test("combo wrap (burn) of both sides debits amount", () => {
+    const cid = CID_BOTH
+    const hash = TX_BOTH
+    mint(COMBO, pid(cid, 0), AMT_BOTH, hash)
+    mint(COMBO, pid(cid, 1), AMT_BOTH, hash)
+    burn(COMBO, pid(cid, 0), AMT_BOTH, hash)
+    burn(COMBO, pid(cid, 1), AMT_BOTH, hash)
+    eq(n(0), m(cid).amountRaw, "wrap returns amount to 0")
+    eq(n(0), m(cid).yesSupplyRaw, "yes 0")
+    eq(n(0), m(cid).noSupplyRaw, "no 0")
+    eq(n(0), globalRaw(), "global 0")
+  })
+
+  test("cross-tx unwrap of YES then NO then merge nets to 0 (not leftover credit)", () => {
+    // Completing a set across transactions must not double-credit the way a
+    // per-transaction max() would (100 + 100 - 100 = 100 leftover).
+    const cid = CID_BOTH
+    const tx1 = Bytes.fromHexString("0x1111111111111111111111111111111111111111111111111111111111111111")
+    const tx2 = Bytes.fromHexString("0x2222222222222222222222222222222222222222222222222222222222222222")
+    const tx3 = Bytes.fromHexString("0x3333333333333333333333333333333333333333333333333333333333333333")
+    mint(COMBO, pid(cid, 0), AMT_BOTH, tx1)
+    eq(n(AMT_BOTH), m(cid).amountRaw, "first side")
+    mint(COMBO, pid(cid, 1), AMT_BOTH, tx2)
+    eq(n(AMT_BOTH), m(cid).amountRaw, "second side does not add another complete set")
+    burn(NR_MOD, pid(cid, 0), AMT_BOTH, tx3)
+    burn(NR_MOD, pid(cid, 1), AMT_BOTH, tx3)
+    merge(cid, AMT_BOTH, tx3)
+    eq(n(0), m(cid).amountRaw, "merged to 0")
+    eq(n(0), globalRaw(), "global 0")
   })
 })

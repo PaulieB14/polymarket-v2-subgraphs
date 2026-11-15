@@ -145,16 +145,17 @@ type GlobalOpenInterest @entity(immutable: false) {
 }
 
 """
-Per-transaction accumulator for CombinatorialModule mints and burns of Binary /
+Per-market accumulator for CombinatorialModule mints and burns of Binary /
 NegRisk (module 1 / 2) tokens. Used so a complete set minted as two TransferSingle
-events credits `amount` once, not twice.
+events — in the same transaction or across transactions — credits `amount` once,
+not twice.
 """
 type V2ComboCredit @entity(immutable: false) {
-  id: ID!                    # txHash-conditionId
+  id: ID!                    # conditionId
   yesMint: BigInt!
   noMint: BigInt!
   yesBurn: BigInt!
   noBurn: BigInt!
-  "Net amount already applied to the market in this transaction (credits minus debits)."
+  "Net amount already applied to the market (credits minus debits)."
   applied: BigInt!
 }
