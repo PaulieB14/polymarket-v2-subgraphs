@@ -1,4 +1,4 @@
-import { BigInt, Bytes, ethereum } from "@graphprotocol/graph-ts"
+import { Address, BigInt, Bytes, ethereum } from "@graphprotocol/graph-ts"
 import { TransferSingle, TransferBatch } from "../generated/PositionManagerV2Mints/PositionManagerV2"
 import {
   ConditionResolved,
@@ -12,14 +12,16 @@ import {
   MigrationConditionRegistered,
   PositionMigrated,
 } from "../generated/NegRiskModuleV2/ModuleV2"
-import { ConditionPayout, MarketOpenInterest, MigrationLink } from "../generated/schema"
+import { ConditionPayout, MarketOpenInterest, MigrationLink, V2ComboCredit } from "../generated/schema"
 import {
   NEG_RISK_MODULE_V2,
+  COMBINATORIAL_MODULE_V2,
   PUSD,
   KIND_SPLIT,
   KIND_MERGE,
   KIND_REDEEM,
   KIND_MIGRATE,
+  KIND_COMBO,
   MarketWrite,
   applyGlobal,
   commitWithGlobal,
@@ -91,20 +93,63 @@ function isNegRiskId(cid: string): boolean {
 // Supplies: every V2 path (split, merge, redeem, convert, horizontal, migration,
 // bridge) mints or burns through the PositionManager, so supplies are exact.
 
-function applySupply(positionId: BigInt, delta: BigInt, event: ethereum.Event): i32 {
+function maxBI(a: BigInt, b: BigInt): BigInt {
+  return a.gt(b) ? a : b
+}
+
+/**
+ * CombinatorialModule extract / unwrap / inject / wrap mints or burns Binary and
+ * NegRisk tokens without BinaryModule / NegRiskModule PositionsSplit or
+ * PositionsMerged. Credit or debit `amount` for those tokens, pairing YES and NO
+ * in the same transaction so a complete set is counted once (max of the two sides).
+ * Mints from BinaryModule / NegRiskModule are already covered by PositionsSplit
+ * or migration settlement and must not be credited here.
+ */
+function applyComboAmount(cid: string, negRisk: boolean, outcome: u8, delta: BigInt, event: ethereum.Event): void {
+  let id = event.transaction.hash.toHexString() + "-" + cid
+  let c = V2ComboCredit.load(id)
+  if (c == null) {
+    c = new V2ComboCredit(id)
+    c.yesMint = BI_ZERO
+    c.noMint = BI_ZERO
+    c.yesBurn = BI_ZERO
+    c.noBurn = BI_ZERO
+    c.applied = BI_ZERO
+  }
+  if (delta.gt(BI_ZERO)) {
+    if (outcome == 0) c.yesMint = c.yesMint.plus(delta)
+    else c.noMint = c.noMint.plus(delta)
+  } else {
+    let burn = delta.neg()
+    if (outcome == 0) c.yesBurn = c.yesBurn.plus(burn)
+    else c.noBurn = c.noBurn.plus(burn)
+  }
+  let net = maxBI(c.yesMint, c.noMint).minus(maxBI(c.yesBurn, c.noBurn))
+  let diff = net.minus(c.applied)
+  c.applied = net
+  c.save()
+  if (diff.isZero()) return
+  v2Amount(cid, negRisk, diff, KIND_COMBO, event)
+}
+
+function applySupply(positionId: BigInt, delta: BigInt, event: ethereum.Event, operator: Address): i32 {
   let p = decode(positionId)
   if (p == null) return 0
   let w = v2Write(p.cid, p.module == MODULE_NEG_RISK, event)
   if (p.outcome == 0) w.supplies(delta, BI_ZERO, true)
   else w.supplies(BI_ZERO, delta, true)
-  return v2Commit(w)
+  let created = v2Commit(w)
+  if (operator.equals(COMBINATORIAL_MODULE_V2) && !delta.isZero()) {
+    applyComboAmount(p.cid, p.module == MODULE_NEG_RISK, p.outcome, delta, event)
+  }
+  return created
 }
 
-function batch(ids: BigInt[], amounts: BigInt[], burn: boolean, event: ethereum.Event): void {
+function batch(ids: BigInt[], amounts: BigInt[], burn: boolean, event: ethereum.Event, operator: Address): void {
   let created = 0
   let n = ids.length < amounts.length ? ids.length : amounts.length
   for (let i = 0; i < n; i++) {
-    created += applySupply(ids[i], burn ? amounts[i].neg() : amounts[i], event)
+    created += applySupply(ids[i], burn ? amounts[i].neg() : amounts[i], event, operator)
   }
   applyGlobal(BI_ZERO, created, false, event)
 }
@@ -113,19 +158,19 @@ function batch(ids: BigInt[], amounts: BigInt[], burn: boolean, event: ethereum.
 // (to = 0); the address checks keep that true even if a node ignored the filters.
 export function handleV2Mint(event: TransferSingle): void {
   if (!event.params.from.equals(ZERO_ADDRESS)) return
-  applyGlobal(BI_ZERO, applySupply(event.params.id, event.params.amount, event), false, event)
+  applyGlobal(BI_ZERO, applySupply(event.params.id, event.params.amount, event, event.params.operator), false, event)
 }
 export function handleV2Burn(event: TransferSingle): void {
   if (!event.params.to.equals(ZERO_ADDRESS)) return
-  applyGlobal(BI_ZERO, applySupply(event.params.id, event.params.amount.neg(), event), false, event)
+  applyGlobal(BI_ZERO, applySupply(event.params.id, event.params.amount.neg(), event, event.params.operator), false, event)
 }
 export function handleV2MintBatch(event: TransferBatch): void {
   if (!event.params.from.equals(ZERO_ADDRESS)) return
-  batch(event.params.ids, event.params.amounts, false, event)
+  batch(event.params.ids, event.params.amounts, false, event, event.params.operator)
 }
 export function handleV2BurnBatch(event: TransferBatch): void {
   if (!event.params.to.equals(ZERO_ADDRESS)) return
-  batch(event.params.ids, event.params.amounts, true, event)
+  batch(event.params.ids, event.params.amounts, true, event, event.params.operator)
 }
 
 // ---------------------------------------------------------------------------

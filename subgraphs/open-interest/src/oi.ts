@@ -16,6 +16,7 @@ export const WCOL = Address.fromBytes(Bytes.fromHexString("0x3A3BD7bb9528E159577
 // to merge / redeem the legacy positions users hand over.
 export const BINARY_MODULE_V2 = Address.fromBytes(Bytes.fromHexString("0x1000008dD9001B968442c1000017eaE6E0dA00Ba"))
 export const NEG_RISK_MODULE_V2 = Address.fromBytes(Bytes.fromHexString("0x200000900045e3B6259600682756002200028933"))
+export const COMBINATORIAL_MODULE_V2 = Address.fromBytes(Bytes.fromHexString("0x30000034706c7d8e12009dab006be20000c031a8"))
 // pUSD (V2 CollateralToken): 6 decimals, 1:1 USD.
 export const PUSD = Address.fromBytes(Bytes.fromHexString("0xC011a7E12a19f7B1f670d46F03B03f3342E82DFB"))
 export const ZERO_BYTES32 = Bytes.fromHexString(
@@ -38,6 +39,8 @@ export const KIND_CONVERT = 3
 export const KIND_RESOLVE = 4
 // V2 migration: legacy collateral released by a V2 module moves to the V2 market (no counter)
 export const KIND_MIGRATE = 5
+// CombinatorialModule extract / unwrap / wrap of Binary or NegRisk tokens (no split/merge counter)
+export const KIND_COMBO = 6
 
 function toDecimal(amount: BigInt): BigDecimal {
   return amount.toBigDecimal().div(BD_1E6)

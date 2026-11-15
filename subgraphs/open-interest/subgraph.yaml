@@ -103,6 +103,7 @@ dataSources:
         - MarketOpenInterest
         - ConditionPayout
         - MigrationLink
+        - V2ComboCredit
         - OISnapshot
         - GlobalOpenInterest
       abis:
@@ -131,6 +132,7 @@ dataSources:
         - MarketOpenInterest
         - ConditionPayout
         - MigrationLink
+        - V2ComboCredit
         - OISnapshot
         - GlobalOpenInterest
       abis:

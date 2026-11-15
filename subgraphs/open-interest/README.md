@@ -1,5 +1,7 @@
 # open-interest (V2)
 
+Version **v0.0.10**. v0.0.9 is deployment `QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS`.
+
 Per-market and global Open Interest for Polymarket on Polygon, in USDC (6 decimals).
 `amount` is unpriced collateral locked in outcome tokens: splits add, merges and
 redemptions subtract, and neg-risk conversions adjust per-question bookkeeping
@@ -63,7 +65,11 @@ hourly snapshots, decimal amounts).
   1 binary, 2 neg-risk); `collateralToken` is pUSD. Supplies come from PositionManager mints
   and burns of module 1 / 2 positions (exact on every path: split, merge, redeem, convert,
   horizontal, migration, bridge); combinatorial positions (module 3) are skipped. `amount`
-  comes from module PositionsSplit / PositionsMerged / PositionRedeemed. Horizontal split /
+  comes from module PositionsSplit / PositionsMerged / PositionRedeemed, and from
+  CombinatorialModule extract / unwrap / wrap of Binary or NegRisk tokens (PositionManager
+  mints and burns whose operator is CombinatorialModule `0x30000034706c7d8e12009dab006be20000c031a8`).
+  Without that credit, a combo unwrap followed by a Binary/NegRisk merge drove `amount`
+  negative (v0.0.9). Horizontal split /
   merge move global only (one collateral amount backs every YES of the event). Resolution
   comes from ConditionResolved; on neg-risk events the siblings and the synthetic Other
   derive NO from RemainingConditionsDerivableAsNo, and Other derives YES from
@@ -108,8 +114,32 @@ from.
 - `MarketOpenInterest`: per-condition collateral `amount`, circulating `yesSupply` / `noSupply`, split, merge, redemption, and conversion counts, `negRisk` flag
 - `ConditionPayout`: resolution payouts (CTF ConditionResolution, V2 ConditionResolved / derived results)
 - `MigrationLink`: V2 condition id <-> legacy CTF condition id
+- `V2ComboCredit`: per-transaction accumulator so a CombinatorialModule YES+NO mint credits `amount` once
 - `OISnapshot`: hourly per-market snapshots
 - `GlobalOpenInterest`: platform total (`id: "global"`)
+
+## Grafting (optional, Studio / local only)
+
+v0.0.10 can graft onto v0.0.9 at block **88,900,000**, just before the first CombinatorialModule
+unwrap+merge that went negative (block 88,911,786). That avoids a full resync from the CTF
+start block. The default `subgraph.yaml` has **no** `graft` block, so a publish to The Graph
+Network stays valid.
+
+For a Studio or local Graph Node that already has v0.0.9
+(`QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS`) indexed past 88,900,000, deploy with
+the optional manifest:
+
+```bash
+graph deploy --studio <slug> subgraphs/open-interest/subgraph.graft.yaml
+```
+
+Do not use `subgraph.graft.yaml` when publishing to the decentralized network unless that
+base deployment is already on the network. Indexers can only graft when the base subgraph
+exists on their node. Official docs recommend against grafting for a first publish to the
+network ([Grafting guide](https://thegraph.com/docs/en/subgraphs/guides/grafting/),
+[Best practice 6](https://thegraph.com/docs/en/subgraphs/best-practices/grafting-hotfix/)).
+A later non-grafted deployment can still start from the CTF genesis block if you want a
+clean network version.
 
 ## Commands
 
