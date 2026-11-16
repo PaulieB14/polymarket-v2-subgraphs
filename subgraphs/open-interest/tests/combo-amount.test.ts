@@ -273,4 +273,67 @@ describe("CombinatorialModule credits amount on extract/unwrap (v0.0.10)", () =>
     eq(n(0), m(cid).amountRaw, "merged to 0")
     eq(n(0), globalRaw(), "global 0")
   })
+
+  test("wrapping migrated YES more than combo-minted YES does not debit amount (0x02283c1f yesBurn 424.44)", () => {
+    // After migrate YES + combo NO + merge, wrapping leftover migrated YES must
+    // not reduce combo credit (those tokens were never combo-credited).
+    const cid = "0x02283c1f0efd13fd95a87ce05952727100000300000000000000000000000000"
+    const tx1 = Bytes.fromHexString("0x0c1d7c641eba138578999559a9dc5618f3af9239616949ed52c2175190c7471f")
+    const txWrap = Bytes.fromHexString("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    const tx3 = Bytes.fromHexString("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    const amt: i64 = 1000000000
+    const wrap: i64 = 424438214
+    mint(NR_MOD, pid(cid, 0), amt, tx1)
+    mint(COMBO, pid(cid, 1), amt, tx1)
+    burn(NR_MOD, pid(cid, 0), amt, tx1)
+    burn(NR_MOD, pid(cid, 1), amt, tx1)
+    merge(cid, amt, tx1)
+    eq(n(0), m(cid).amountRaw, "first migrate+combo+merge nets 0")
+    // One-sided migrate of leftover YES, then wrap it through CombinatorialModule.
+    mint(NR_MOD, pid(cid, 0), wrap, txWrap)
+    burn(COMBO, pid(cid, 0), wrap, txWrap)
+    eq(n(0), m(cid).amountRaw, "wrapping migrated YES does not debit amount")
+    mint(NR_MOD, pid(cid, 0), amt, tx3)
+    mint(COMBO, pid(cid, 1), amt, tx3)
+    burn(NR_MOD, pid(cid, 0), amt, tx3)
+    burn(NR_MOD, pid(cid, 1), amt, tx3)
+    merge(cid, amt, tx3)
+    eq(n(0), m(cid).amountRaw, "later migrate+combo+merge still nets 0")
+    eq(n(0), globalRaw(), "global 0")
+  })
+
+  test("combo YES with migrated NO, then combo NO with migrated YES, both merge to 0 (0x01429a8f)", () => {
+    // Lifetime max(mints) would credit 2500, then the second mixed-side merge
+    // of 245.53 would leave amount at -245.53. Retiring open inventory on
+    // merge lets the short-side combo mint still credit.
+    const cid = "0x01429a8f2ca80f3be03a9a3b4def461582000000000000000000000000000000"
+    const txA = Bytes.fromHexString("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    const txB = Bytes.fromHexString("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    const txC = Bytes.fromHexString("0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc")
+    const both: i64 = 1000000000
+    const yesCombo: i64 = 1500000000
+    const noCombo: i64 = 245531001
+    // Complete combo unwrap + merge.
+    mint(COMBO, pid(cid, 0), both, txA)
+    mint(COMBO, pid(cid, 1), both, txA)
+    burn(BIN_MOD, pid(cid, 0), both, txA)
+    burn(BIN_MOD, pid(cid, 1), both, txA)
+    merge(cid, both, txA)
+    eq(n(0), m(cid).amountRaw, "both-sides unwrap merged to 0")
+    // Migrate NO + combo YES + merge.
+    mint(BIN_MOD, pid(cid, 1), yesCombo, txB)
+    mint(COMBO, pid(cid, 0), yesCombo, txB)
+    burn(BIN_MOD, pid(cid, 0), yesCombo, txB)
+    burn(BIN_MOD, pid(cid, 1), yesCombo, txB)
+    merge(cid, yesCombo, txB)
+    eq(n(0), m(cid).amountRaw, "combo YES + migrated NO merged to 0")
+    // Migrate YES + combo NO + merge (the side the lifetime max() missed).
+    mint(BIN_MOD, pid(cid, 0), noCombo, txC)
+    mint(COMBO, pid(cid, 1), noCombo, txC)
+    burn(BIN_MOD, pid(cid, 0), noCombo, txC)
+    burn(BIN_MOD, pid(cid, 1), noCombo, txC)
+    merge(cid, noCombo, txC)
+    eq(n(0), m(cid).amountRaw, "combo NO + migrated YES also merged to 0")
+    eq(n(0), globalRaw(), "global 0")
+  })
 })

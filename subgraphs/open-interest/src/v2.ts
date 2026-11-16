@@ -96,43 +96,81 @@ function isNegRiskId(cid: string): boolean {
 function maxBI(a: BigInt, b: BigInt): BigInt {
   return a.gt(b) ? a : b
 }
+function minBI(a: BigInt, b: BigInt): BigInt {
+  return a.lt(b) ? a : b
+}
+
+function comboCredit(cid: string): V2ComboCredit {
+  let c = V2ComboCredit.load(cid)
+  if (c == null) {
+    c = new V2ComboCredit(cid)
+    c.yesMint = BI_ZERO
+    c.noMint = BI_ZERO
+    c.yesBurn = BI_ZERO
+    c.noBurn = BI_ZERO
+    c.yesOpen = BI_ZERO
+    c.noOpen = BI_ZERO
+    c.applied = BI_ZERO
+  }
+  return c
+}
 
 /**
  * CombinatorialModule extract / unwrap / inject / wrap mints or burns Binary and
  * NegRisk tokens without BinaryModule / NegRiskModule PositionsSplit or
  * PositionsMerged. Credit or debit `amount` for those tokens, pairing YES and NO
- * across the market's lifetime so a complete set is counted once (max of the two
- * sides). Same-transaction and cross-transaction unwraps use the same accumulator;
- * a per-transaction max() would double-credit a set completed in a later tx
+ * so a complete set is counted once (max of the two still-held sides).
+ * Same-transaction and cross-transaction unwraps use the same accumulator; a
+ * per-transaction max() would double-credit a set completed in a later tx
  * (YES in tx1 + NO in tx2 + merge = leftover amount).
+ *
+ * Lifetime max(mints)-max(burns) is not enough: wrapping migrated (non-combo)
+ * tokens would debit credit those tokens never received, and combo mints on
+ * both sides that each pair with a migrated complement would stop increasing
+ * max() and go negative at the second merge. Open inventory (minted, not
+ * wrapped, not yet merged) is the pairing pool; PositionsMerged retires it
+ * without a second debit.
  * Mints from BinaryModule / NegRiskModule are already covered by PositionsSplit
  * or migration settlement and must not be credited here.
  */
 function applyComboAmount(cid: string, negRisk: boolean, outcome: u8, delta: BigInt, event: ethereum.Event): void {
-  let id = cid
-  let c = V2ComboCredit.load(id)
-  if (c == null) {
-    c = new V2ComboCredit(id)
-    c.yesMint = BI_ZERO
-    c.noMint = BI_ZERO
-    c.yesBurn = BI_ZERO
-    c.noBurn = BI_ZERO
-    c.applied = BI_ZERO
-  }
+  if (delta.isZero()) return
+  let c = comboCredit(cid)
+  let before = maxBI(c.yesOpen, c.noOpen)
   if (delta.gt(BI_ZERO)) {
-    if (outcome == 0) c.yesMint = c.yesMint.plus(delta)
-    else c.noMint = c.noMint.plus(delta)
+    if (outcome == 0) {
+      c.yesMint = c.yesMint.plus(delta)
+      c.yesOpen = c.yesOpen.plus(delta)
+    } else {
+      c.noMint = c.noMint.plus(delta)
+      c.noOpen = c.noOpen.plus(delta)
+    }
   } else {
     let burn = delta.neg()
-    if (outcome == 0) c.yesBurn = c.yesBurn.plus(burn)
-    else c.noBurn = c.noBurn.plus(burn)
+    if (outcome == 0) {
+      c.yesBurn = c.yesBurn.plus(burn)
+      c.yesOpen = c.yesOpen.minus(minBI(c.yesOpen, burn))
+    } else {
+      c.noBurn = c.noBurn.plus(burn)
+      c.noOpen = c.noOpen.minus(minBI(c.noOpen, burn))
+    }
   }
-  let net = maxBI(c.yesMint, c.noMint).minus(maxBI(c.yesBurn, c.noBurn))
-  let diff = net.minus(c.applied)
-  c.applied = net
+  let after = maxBI(c.yesOpen, c.noOpen)
+  let diff = after.minus(before)
+  c.applied = c.applied.plus(diff)
   c.save()
   if (diff.isZero()) return
   v2Amount(cid, negRisk, diff, KIND_COMBO, event)
+}
+
+/** Retire still-held combo tokens that a V2 merge just burned. No amount change. */
+function consumeComboOpen(cid: string, amount: BigInt): void {
+  if (amount.isZero()) return
+  let c = V2ComboCredit.load(cid)
+  if (c == null) return
+  c.yesOpen = c.yesOpen.minus(minBI(c.yesOpen, amount))
+  c.noOpen = c.noOpen.minus(minBI(c.noOpen, amount))
+  c.save()
 }
 
 function applySupply(positionId: BigInt, delta: BigInt, event: ethereum.Event, operator: Address): i32 {
@@ -192,7 +230,9 @@ export function handleV2Split(event: PositionsSplit): void {
 }
 export function handleV2Merge(event: PositionsMerged): void {
   let c = event.params.conditionId
-  v2Amount(idFromPrefix(c), c[0] == MODULE_NEG_RISK, event.params.amount.neg(), KIND_MERGE, event)
+  let cid = idFromPrefix(c)
+  v2Amount(cid, c[0] == MODULE_NEG_RISK, event.params.amount.neg(), KIND_MERGE, event)
+  consumeComboOpen(cid, event.params.amount)
 }
 export function handleV2Redeem(event: PositionRedeemed): void {
   let p = decode(event.params.positionId)

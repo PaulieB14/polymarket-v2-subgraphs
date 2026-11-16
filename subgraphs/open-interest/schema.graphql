@@ -146,9 +146,15 @@ type GlobalOpenInterest @entity(immutable: false) {
 
 """
 Per-market accumulator for CombinatorialModule mints and burns of Binary /
-NegRisk (module 1 / 2) tokens. Used so a complete set minted as two TransferSingle
+NegRisk (module 1 / 2) tokens. A complete set minted as two TransferSingle
 events — in the same transaction or across transactions — credits `amount` once,
-not twice.
+not twice. `yesOpen` / `noOpen` are combo tokens still held (minted minus
+combo-burns minus V2 merges). Credit moves with max(yesOpen, noOpen) on mint
+or wrap; a merge retires open inventory without a second debit (PositionsMerged
+already subtracts `amount`). This avoids two holes in a lifetime
+max(mints)-max(burns) rule: wrapping migrated (non-combo) tokens, and combo
+mints on both sides that each pair with a migrated complement rather than
+with each other.
 """
 type V2ComboCredit @entity(immutable: false) {
   id: ID!                    # conditionId
@@ -156,6 +162,10 @@ type V2ComboCredit @entity(immutable: false) {
   noMint: BigInt!
   yesBurn: BigInt!
   noBurn: BigInt!
+  "Combo YES still held (not wrapped and not yet merged)."
+  yesOpen: BigInt!
+  "Combo NO still held (not wrapped and not yet merged)."
+  noOpen: BigInt!
   "Net amount already applied to the market (credits minus debits)."
   applied: BigInt!
 }
