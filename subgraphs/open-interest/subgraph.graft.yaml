@@ -1,16 +1,22 @@
 specVersion: 1.2.0
 indexerHints:
   prune: auto
-# OPTIONAL grafted manifest. Use this file only on Studio or a Graph Node that
-# already has v0.0.9 (QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS) indexed
-# past block 88,900,000. Do not pass this file when publishing to The Graph
-# Network unless that base deployment is already on the network (indexers must
-# have it). The default subgraph.yaml has no graft block.
+# Grafted manifest for fast iteration (v0.0.10-graft). Base: v0.0.9
+# (QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS, prune: auto). Block 95,027,583 is
+# the earliest block the indexer still holds for the base after auto-pruning.
+# State before the graft block is copied as-is (v0.0.9 bugs included: V2 combo
+# negatives from ~88.9M, the NegRiskAdapter leak on two USDC.e markets at 81.4-82.0M).
+# Only blocks after it are indexed with this code. V2ComboCredit starts empty at the
+# graft, so combo / bridge tokens minted before it are not in the open inventory.
+# Schema changes vs v0.0.9 are additive only (new V2ComboCredit entity), as grafting
+# requires. Use for testing only; the default subgraph.yaml (no graft) is the full
+# resync build. Do not publish this one to the decentralized network unless every
+# indexer has the base deployment.
 features:
   - grafting
 graft:
   base: QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS
-  block: 88900000
+  block: 95027583
 schema:
   file: ./schema.graphql
 dataSources:
@@ -171,6 +177,7 @@ dataSources:
         - MarketOpenInterest
         - ConditionPayout
         - MigrationLink
+        - V2ComboCredit
         - OISnapshot
         - GlobalOpenInterest
       abis:
@@ -189,6 +196,10 @@ dataSources:
           handler: handleV2MigrationRegistered
         - event: PositionMigrated(indexed address,indexed bytes31,indexed uint256,uint256,uint256)
           handler: handleV2PositionMigrated
+        - event: BridgePositionMinted(indexed address,indexed uint256,uint256)
+          handler: handleV2BridgeMinted
+        - event: BridgePositionsBurned(uint256[],uint256[])
+          handler: handleV2BridgeBurned
       file: ./src/v2.ts
   - kind: ethereum
     name: NegRiskModuleV2
@@ -205,6 +216,7 @@ dataSources:
         - MarketOpenInterest
         - ConditionPayout
         - MigrationLink
+        - V2ComboCredit
         - OISnapshot
         - GlobalOpenInterest
       abis:
@@ -223,6 +235,10 @@ dataSources:
           handler: handleV2MigrationRegistered
         - event: PositionMigrated(indexed address,indexed bytes31,indexed uint256,uint256,uint256)
           handler: handleV2PositionMigrated
+        - event: BridgePositionMinted(indexed address,indexed uint256,uint256)
+          handler: handleV2BridgeMinted
+        - event: BridgePositionsBurned(uint256[],uint256[])
+          handler: handleV2BridgeBurned
         - event: HorizontalSplit(indexed address,indexed bytes29,indexed address,uint256)
           handler: handleV2HorizontalSplit
         - event: HorizontalMerge(indexed address,indexed bytes29,indexed address,uint256)

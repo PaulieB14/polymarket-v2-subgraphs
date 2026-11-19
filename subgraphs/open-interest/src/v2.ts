@@ -11,6 +11,8 @@ import {
   SyntheticConditionDerivableAsYes,
   MigrationConditionRegistered,
   PositionMigrated,
+  BridgePositionMinted,
+  BridgePositionsBurned,
 } from "../generated/NegRiskModuleV2/ModuleV2"
 import { ConditionPayout, MarketOpenInterest, MigrationLink, V2ComboCredit } from "../generated/schema"
 import {
@@ -116,9 +118,10 @@ function comboCredit(cid: string): V2ComboCredit {
 }
 
 /**
- * CombinatorialModule extract / unwrap / inject / wrap mints or burns Binary and
- * NegRisk tokens without BinaryModule / NegRiskModule PositionsSplit or
- * PositionsMerged. Credit or debit `amount` for those tokens, pairing YES and NO
+ * CombinatorialModule unwrap (mint) / wrap (burn) and module mintFromBridge /
+ * burnFromBridge mint or burn Binary and NegRisk tokens without BinaryModule /
+ * NegRiskModule PositionsSplit or PositionsMerged (extract / inject only touch
+ * module 3 ids). Credit or debit `amount` for those tokens, pairing YES and NO
  * so a complete set is counted once (max of the two still-held sides).
  * Same-transaction and cross-transaction unwraps use the same accumulator; a
  * per-transaction max() would double-credit a set completed in a later tx
@@ -159,7 +162,12 @@ function applyComboAmount(cid: string, negRisk: boolean, outcome: u8, delta: Big
   let diff = after.minus(before)
   c.applied = c.applied.plus(diff)
   c.save()
-  if (diff.isZero()) return
+  // No credit move, but a burn may still have left `amount` above what the remaining
+  // tokens can claim (e.g. wrapping combo YES whose open inventory a merge retired).
+  if (diff.isZero()) {
+    if (delta.lt(BI_ZERO)) capToClaims(cid, negRisk, event)
+    return
+  }
   v2Amount(cid, negRisk, diff, KIND_COMBO, event)
 }
 
@@ -168,6 +176,8 @@ function consumeComboOpen(cid: string, amount: BigInt): void {
   if (amount.isZero()) return
   let c = V2ComboCredit.load(cid)
   if (c == null) return
+  // Nothing open: skip the write (and its PoI entry) on every later merge.
+  if (c.yesOpen.isZero() && c.noOpen.isZero()) return
   c.yesOpen = c.yesOpen.minus(minBI(c.yesOpen, amount))
   c.noOpen = c.noOpen.minus(minBI(c.noOpen, amount))
   c.save()
@@ -217,11 +227,64 @@ export function handleV2BurnBatch(event: TransferBatch): void {
 // ---------------------------------------------------------------------------
 // Collateral (`amount`, global), pUSD 6dp.
 
+// ---------------------------------------------------------------------------
+// Cap to claims (V2 binary only). Fungible tokens make any per-token attribution of
+// combo / bridge inventory inexact, and some sequences end with `amount` above zero
+// and no tokens left (split 10, unwrap YES 5, merge 10, wrap YES 5 -> +5). `amount`
+// can never exceed what the circulating tokens can still claim:
+//   open:     max(yesSupply, noSupply)   (a complete set needs both sides)
+//   resolved: (yesSupply * n0 + noSupply * n1) / (n0 + n1)
+// so after every debit / combo move, and at resolution, the excess is released
+// (market and global). It only lowers `amount`, never raises it. V2 supplies are
+// exact (every path mints / burns through the PositionManager).
+// Not applied to V2 neg-risk: convert and horizontal split / merge move YES without
+// a per-market credit, so per-market `amount` is not conserved there (use supplies).
+
+function claimBound(m: MarketOpenInterest): BigInt {
+  if (m.resolved && m.payoutNumerators != null) {
+    let nums = m.payoutNumerators as BigInt[]
+    let den = nums[0].plus(nums[1])
+    if (den.isZero()) return maxBI(m.yesSupplyRaw, m.noSupplyRaw)
+    let y = m.yesSupplyRaw.gt(BI_ZERO) ? m.yesSupplyRaw : BI_ZERO
+    let n = m.noSupplyRaw.gt(BI_ZERO) ? m.noSupplyRaw : BI_ZERO
+    return y.times(nums[0]).plus(n.times(nums[1])).div(den)
+  }
+  let b = maxBI(m.yesSupplyRaw, m.noSupplyRaw)
+  return b.gt(BI_ZERO) ? b : BI_ZERO
+}
+
+/** Excess of `amount` over claimBound on a V2 binary market, else 0. */
+function claimExcess(m: MarketOpenInterest | null, negRisk: boolean): BigInt {
+  if (m == null || negRisk || m.negRisk) return BI_ZERO
+  let excess = m.amountRaw.minus(claimBound(m))
+  return excess.gt(BI_ZERO) ? excess : BI_ZERO
+}
+
+/** Release the excess of `amount` over what the tokens can claim (own write). */
+function capToClaims(cid: string, negRisk: boolean, event: ethereum.Event): void {
+  if (negRisk) return
+  let m = MarketOpenInterest.load(cid)
+  let excess = claimExcess(m, negRisk)
+  if (excess.isZero()) return
+  let w = v2Write(cid, negRisk, event)
+  w.amount(excess.neg(), KIND_COMBO)
+  commitWithGlobal(w, excess.neg(), event)
+}
+
 function v2Amount(cid: string, negRisk: boolean, delta: BigInt, kind: i32, event: ethereum.Event): void {
   let w = v2Write(cid, negRisk, event)
   w.amount(delta, kind)
   let m = w.market
   if (m != null && w.fresh) m.collateralToken = PUSD
+  // Cap after debits and combo / bridge moves, in the same write (one save). Splits
+  // and migration credits are not capped (their mints may come later in the tx).
+  if (delta.lt(BI_ZERO) || kind == KIND_COMBO) {
+    let excess = claimExcess(m, negRisk)
+    if (!excess.isZero()) {
+      w.amount(excess.neg(), KIND_COMBO)
+      delta = delta.minus(excess)
+    }
+  }
   commitWithGlobal(w, delta, event)
 }
 export function handleV2Split(event: PositionsSplit): void {
@@ -261,6 +324,9 @@ function writePayout(cid: string, nums: BigInt[], event: ethereum.Event): void {
   r.blockNumber = event.block.number
   r.save()
   resolveMarket(cid, nums, event)
+  // Tokens on the losing side no longer claim anything (e.g. an unwrapped combo NO when
+  // YES wins: the combo YES redeems in module 3).
+  capToClaims(cid, isNegRiskId(cid), event)
 }
 export function handleV2ConditionResolved(event: ConditionResolved): void {
   writePayout(idFromPrefix(event.params.conditionId), event.params.result, event)
@@ -342,4 +408,29 @@ export function migrationSettlement(w: MarketWrite, released: BigInt, event: eth
   }
   applyGlobal(BI_ZERO, created, false, event)
   return true
+}
+
+// ---------------------------------------------------------------------------
+// Bridge (BaseModule.mintFromBridge / burnFromBridge). Polygon is the hub: a bridge mints
+// positions through the PositionManager with the module as operator (no PositionsSplit)
+// and burns them on the way out (no PositionsMerged). Same accumulator and pairing as the
+// combo path, so a bridged-in position followed by a merge does not drive `amount`
+// negative, and a bridged-out position releases its claim (cap). Supplies come from the
+// PositionManager mint / burn emitted before these events.
+
+export function handleV2BridgeMinted(event: BridgePositionMinted): void {
+  let p = decode(event.params.positionId)
+  if (p == null || event.params.amount.isZero()) return
+  applyComboAmount(p.cid, p.module == MODULE_NEG_RISK, p.outcome, event.params.amount, event)
+}
+
+export function handleV2BridgeBurned(event: BridgePositionsBurned): void {
+  let ids = event.params.positionIds
+  let amounts = event.params.amounts
+  let n = ids.length < amounts.length ? ids.length : amounts.length
+  for (let i = 0; i < n; i++) {
+    let p = decode(ids[i])
+    if (p == null || amounts[i].isZero()) continue
+    applyComboAmount(p.cid, p.module == MODULE_NEG_RISK, p.outcome, amounts[i].neg(), event)
+  }
 }

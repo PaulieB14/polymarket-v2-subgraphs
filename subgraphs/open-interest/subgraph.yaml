@@ -161,6 +161,7 @@ dataSources:
         - MarketOpenInterest
         - ConditionPayout
         - MigrationLink
+        - V2ComboCredit
         - OISnapshot
         - GlobalOpenInterest
       abis:
@@ -179,6 +180,10 @@ dataSources:
           handler: handleV2MigrationRegistered
         - event: PositionMigrated(indexed address,indexed bytes31,indexed uint256,uint256,uint256)
           handler: handleV2PositionMigrated
+        - event: BridgePositionMinted(indexed address,indexed uint256,uint256)
+          handler: handleV2BridgeMinted
+        - event: BridgePositionsBurned(uint256[],uint256[])
+          handler: handleV2BridgeBurned
       file: ./src/v2.ts
   - kind: ethereum
     name: NegRiskModuleV2
@@ -195,6 +200,7 @@ dataSources:
         - MarketOpenInterest
         - ConditionPayout
         - MigrationLink
+        - V2ComboCredit
         - OISnapshot
         - GlobalOpenInterest
       abis:
@@ -213,6 +219,10 @@ dataSources:
           handler: handleV2MigrationRegistered
         - event: PositionMigrated(indexed address,indexed bytes31,indexed uint256,uint256,uint256)
           handler: handleV2PositionMigrated
+        - event: BridgePositionMinted(indexed address,indexed uint256,uint256)
+          handler: handleV2BridgeMinted
+        - event: BridgePositionsBurned(uint256[],uint256[])
+          handler: handleV2BridgeBurned
         - event: HorizontalSplit(indexed address,indexed bytes29,indexed address,uint256)
           handler: handleV2HorizontalSplit
         - event: HorizontalMerge(indexed address,indexed bytes29,indexed address,uint256)

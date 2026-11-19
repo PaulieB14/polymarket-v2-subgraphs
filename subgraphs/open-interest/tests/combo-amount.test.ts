@@ -92,7 +92,7 @@ function split(cid: string, amount: i64, hash: Bytes): void {
   handleV2Split(e)
 }
 
-describe("CombinatorialModule credits amount on extract/unwrap (v0.0.10)", () => {
+describe("CombinatorialModule credits amount on unwrap / wrap (v0.0.10)", () => {
   beforeEach(() => { clearStore() })
 
   test("unwrap both sides then merge (tx 0x1e8eec93…c9c1, $1,000): amount nets to 0, not -1000", () => {

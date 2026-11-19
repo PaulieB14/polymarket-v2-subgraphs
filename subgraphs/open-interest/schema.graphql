@@ -145,8 +145,9 @@ type GlobalOpenInterest @entity(immutable: false) {
 }
 
 """
-Per-market accumulator for CombinatorialModule mints and burns of Binary /
-NegRisk (module 1 / 2) tokens. A complete set minted as two TransferSingle
+Per-market accumulator for CombinatorialModule unwrap / wrap and module
+mintFromBridge / burnFromBridge mints and burns of Binary / NegRisk (module 1 / 2)
+tokens. A complete set minted as two TransferSingle
 events — in the same transaction or across transactions — credits `amount` once,
 not twice. `yesOpen` / `noOpen` are combo tokens still held (minted minus
 combo-burns minus V2 merges). Credit moves with max(yesOpen, noOpen) on mint

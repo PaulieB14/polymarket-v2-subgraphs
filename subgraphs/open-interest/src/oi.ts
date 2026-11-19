@@ -39,7 +39,8 @@ export const KIND_CONVERT = 3
 export const KIND_RESOLVE = 4
 // V2 migration: legacy collateral released by a V2 module moves to the V2 market (no counter)
 export const KIND_MIGRATE = 5
-// CombinatorialModule extract / unwrap / wrap of Binary or NegRisk tokens (no split/merge counter)
+// V2 CombinatorialModule unwrap / wrap, module bridge mint / burn, and cap-to-claims releases
+// of Binary or NegRisk tokens (no split/merge counter)
 export const KIND_COMBO = 6
 
 function toDecimal(amount: BigInt): BigDecimal {
