@@ -471,7 +471,8 @@ add("0xebeec58fad7c2073369f3551b26fb7e949646f5bf07bb2be251744a5036de4fa", "53q o
 add("0x0001cb8c0b39aeb614ab9a43867595317f06ede9c011661513065c638fbbefda", "8q resolved YES", ["negrisk","resolved_yes"])
 add("0x000083c0ef23ccef8e2bd09dcb1ae4d09ca4358fe5a725d98bdad437960b8530", "11q resolved NO", ["negrisk","resolved_no"])
 add("0x688e74a4e437775cc5aea5c9714c1d2bac97434521a6ec68f98f2309880c830f", "negative amount (-1533) reported NO", ["negrisk","resolved_no","negative_amount"])
-add("0x22a396fed8d3b158e3adca31c9a22d2f500cc8a8544e74f5b6090bc87a53cdcf", "negative amount (-43) reported NO", ["negrisk","resolved_no","negative_amount"])
+# Relabelled (Ellipra, PR #9 review): Gamma has this question resolved YES, not NO.
+add("0x22a396fed8d3b158e3adca31c9a22d2f500cc8a8544e74f5b6090bc87a53cdcf", "negative amount (-43) resolved YES", ["negrisk","resolved_yes","negative_amount"])
 add("0xcd208596d495484cf406d645c6ddc8c43bc1de4e335c01ed610a2b07ae66c43c", "negative amount (-772) many redemptions", ["negrisk","resolved_no","negative_amount"])
 
 # --- Regular CTF high volume ---
@@ -486,6 +487,21 @@ add("0xce3c54c3e773e8b3bf73e4c12af93205b21195d03b9c386e22f274b9acfc2c56", "regul
 add("0x79b7408f02df2eba4034ca4c06ddf17b8dbeacc5adbe8595969e7573912c4e3b", "regular high 1.15M", ["regular","high_volume"])
 add("0x5c79dfde05559b79a9cb9f7c4187e4d49632dd042572ae676952f812732591cc", "regular high 1.89M", ["regular","high_volume"])
 add("0x5db999fad322cea2914535aae5517060c3f80ad6d8c0231cde2124a434d16846", "regular high 6.7M (pagination stress)", ["regular","high_volume","pagination"])
+
+# --- Polymarket V2 (Gamma "polyv2-*", PositionManager ERC1155, pUSD) ---
+# Not replayed against the CTF: checked by check_v2_markets() (subgraph at the pinned
+# block vs data-api /v2/oi and the cap invariant amountRaw <= claims). yesId / noId are
+# the Gamma clobTokenIds (= PositionManager position ids).
+add("0x017d1e01561c374925029c48d5249691ca000000000000000000000000000000", "polyv2 nba-cle-nyk 2026-11-11 (resolved YES)", ["polyv2","v2_binary","resolved_yes"],
+    yesId=673375820099379269761014006244372837799090532969111081655717424084258127872, noId=673375820099379269761014006244372837799090532969111081655717424084258127873)
+add("0x01aafd7b371e01823bbf38b7c615ae0a4e000000000000000000000000000000", "polyv2 nba-nyk-tor 2026-11-17 (resolved YES, high volume)", ["polyv2","v2_binary","resolved_yes","high_volume"],
+    yesId=754426313299289546946215822322545397915269101107818354075513110609377886208, noId=754426313299289546946215822322545397915269101107818354075513110609377886209)
+add("0x01bfcd4ffefd3ab344d1ff67e63e6c2d4d000000000000000000000000000000", "polyv2 bkbsl tof-pet 2026-10-25 (resolved NO)", ["polyv2","v2_binary","resolved_no"],
+    yesId=791197652646311140560040175708023538765583838159663343659373026668206620672, noId=791197652646311140560040175708023538765583838159663343659373026668206620673)
+add("0x014ae3d14fe81e45d8accdeb73099f2160000000000000000000000000000000", "polyv2 central-park high >=65F 2026-10-16 (resolved YES)", ["polyv2","v2_binary","resolved_yes"],
+    yesId=584631870841600673940804121214185151057165926937505238781282101080302288896, noId=584631870841600673940804121214185151057165926937505238781282101080302288897)
+add("0x0255c41d747588b4a9dbaba984a4093111000c00000000000000000000000400", "polyv2 NYC high temp Oct 30 68-69F (neg-risk, open)", ["polyv2","v2_negrisk"],
+    yesId=1056161234059696262103638593071164169636008086984931975163686004493492683776, noId=1056161234059696262103638593071164169636008086984931975163686004493492683777)
 
 # typo fix later if 0x024b68...c36fee is wrong (csv had 8b36fee) — script hydrates and will error on missing subgraph row.
 
@@ -1340,6 +1356,42 @@ def load_progress() -> dict:
     return {}
 
 
+def check_v2_markets(gkey: str, v2: list[dict], block: int) -> list[dict]:
+    """V2 (polyv2) seeds: subgraph row at the pinned block vs data-api /v2/oi (priced OI,
+    tip-only) and the cap invariant. Binary V2: amountRaw <= max(yes, no) while open,
+    <= payout value once resolved. Neg-risk V2: per-market amount is not conserved
+    (convert / horizontal split), so only supplies are compared."""
+    out = []
+    if not v2:
+        return out
+    ids = [m["conditionId"] for m in v2]
+    data = graphql(gkey, """{ mois: marketOpenInterests(block: {number: %d}, first: 100, where: {id_in: [%s]}) {
+        id amountRaw yesSupplyRaw noSupplyRaw negRisk resolved payoutNumerators lastUpdatedBlock } }"""
+        % (block, gql_ids(ids)))
+    rows = {r["id"].lower(): r for r in data.get("mois", [])}
+    api = {}
+    try:
+        res = curl_json("https://data-api.polymarket.com/v2/oi?condition=" + ",".join(ids))
+        res = res.get("data", res) if isinstance(res, dict) else res
+        for r in res if isinstance(res, list) else []:
+            api[(r.get("condition_id") or r.get("conditionId") or "").lower()] = r.get("value")
+    except Exception as e:
+        print("  data-api v2 error:", e)
+    for m in v2:
+        r = rows.get(m["conditionId"])
+        rec = {"name": m["name"], "id": m["conditionId"], "tags": m["tags"], "sg": r, "api_v2_oi": api.get(m["conditionId"])}
+        if r:
+            amt, y, n = int(r["amountRaw"]), int(r["yesSupplyRaw"]), int(r["noSupplyRaw"])
+            nums = [int(x) for x in (r.get("payoutNumerators") or [])]
+            bound = (max(y, 0) * nums[0] + max(n, 0) * nums[1]) // (sum(nums) or 1) if r["resolved"] and len(nums) == 2 else max(y, n, 0)
+            rec["claimBound"] = bound
+            rec["amount_le_claims"] = r["negRisk"] or amt <= bound
+            rec["amount_ge_0"] = r["negRisk"] or amt >= 0
+        out.append(rec)
+        print(f"  V2 {m['name'][:48]}: sg={'missing' if not r else r['amountRaw']} api={rec['api_v2_oi']} ok={rec.get('amount_le_claims')}", flush=True)
+    return out
+
+
 def save_progress(progress: dict) -> None:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     tmp = PROGRESS_PATH.with_suffix(".json.tmp")
@@ -1398,7 +1450,10 @@ def main() -> int:
     wcol = "0x" + wcol_raw[-40:]
     print(f"WCOL: {wcol}")
 
-    markets = [dict(m) for m in SEED]
+    markets = [dict(m) for m in SEED if "polyv2" not in m["tags"]]
+    v2_seed = [dict(m) for m in SEED if "polyv2" in m["tags"]]
+    print(f"Checking {len(v2_seed)} V2 (polyv2) seed markets at block {head}…")
+    progress["v2_checks"] = check_v2_markets(gkey, v2_seed, head)
     print(f"Hydrating {len(markets)} seed markets…")
     events, fee_rows = hydrate(gkey, markets)
     expand_universe(gkey, markets)
