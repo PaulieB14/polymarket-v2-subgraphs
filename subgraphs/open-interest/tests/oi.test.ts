@@ -127,6 +127,23 @@ describe("ConditionalTokens", () => {
     assert.fieldEquals("GlobalOpenInterest", "global", "amountRaw", "1000000")
   })
 
+  test("NegRiskAdapter PositionSplit on a USDC.e binary market does not credit amount", () => {
+    // Real leak: NRA.PositionSplit on 0x890fc3ba… ($106) and 0xd595eb9b… ($4)
+    // at blocks 81.4M–82.0M. CTF WCOL+NRA is already skipped by counts(); the
+    // adapter event was still credited onto the USDC.e market.
+    split(USDC_E, ZERO32, COND, 1000000)
+    let s = changetype<NrSplit>(newMockEvent())
+    s.parameters = [
+      p("stakeholder", ethereum.Value.fromAddress(NRA)),
+      p("conditionId", ethereum.Value.fromFixedBytes(COND)),
+      p("amount", u(106000000)),
+    ]
+    handleNegRiskPositionSplit(s)
+    assert.fieldEquals("MarketOpenInterest", COND_ID, "amountRaw", "1000000")
+    assert.fieldEquals("MarketOpenInterest", COND_ID, "negRisk", "false")
+    assert.fieldEquals("GlobalOpenInterest", "global", "amountRaw", "1000000")
+  })
+
   test("nested split (non-zero parentCollectionId) does not add OI", () => {
     let parent = Bytes.fromHexString("0x1111111111111111111111111111111111111111111111111111111111111111")
     split(USDC_E, parent, COND, 1000000)

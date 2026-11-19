@@ -60,7 +60,9 @@ export function handleQuestionPrepared(event: QuestionPrepared): void {
 // WrappedCollateral 1:1 before touching the CTF.
 export function handleNegRiskPositionSplit(event: PositionSplit): void {
   let w = trackedMarket(event.params.conditionId.toHexString(), true, event)
-  if (w == null) return
+  // Adapter events must not credit a pre-existing USDC.e binary market
+  // (on-chain: NRA.PositionSplit on 0x890fc3ba… +$106 and 0xd595eb9b… +$4).
+  if (w == null || !w.isNegRisk()) return
   let amount = event.params.amount
   w.amount(amount, KIND_SPLIT)
   w.supplies(amount, amount, true)
@@ -69,7 +71,7 @@ export function handleNegRiskPositionSplit(event: PositionSplit): void {
 
 export function handleNegRiskPositionsMerge(event: PositionsMerge): void {
   let w = trackedMarket(event.params.conditionId.toHexString(), true, event)
-  if (w == null) return
+  if (w == null || !w.isNegRisk()) return
   let delta = event.params.amount.neg()
   w.amount(delta, KIND_MERGE)
   w.supplies(delta, delta, true)
@@ -78,7 +80,7 @@ export function handleNegRiskPositionsMerge(event: PositionsMerge): void {
 
 export function handleNegRiskPayoutRedemption(event: PayoutRedemption): void {
   let w = trackedMarket(event.params.conditionId.toHexString(), true, event)
-  if (w == null) return
+  if (w == null || !w.isNegRisk()) return
   // amounts[0] = YES tokens burned, amounts[1] = NO tokens burned
   let amounts = event.params.amounts
   let yesBurn = amounts.length > 0 ? amounts[0] : BigInt.zero()
