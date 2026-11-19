@@ -140,19 +140,20 @@ from.
 ## Grafting (iteration build only)
 
 `subgraph.graft.yaml` grafts v0.0.10 onto v0.0.9
-(`QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS`) at block **95,027,583**, the earliest
-block the indexer still holds for v0.0.9 (`prune: auto`). Graph Node's graft validation does
+(`QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS`) at block **97,500,000**, a small margin
+above 97,427,800, the earliest block the indexer still holds for v0.0.9 (`prune: auto`; the
+pruned range moves forward with the chain head, so re-check before each graft deploy). Graph Node's graft validation does
 not check the base's earliest retained block, so a graft below the pruned range would copy
 an incomplete state without an error; do not lower the block.
 
-What a graft at 95,027,583 means:
+What a graft at 97,500,000 means:
 
 - Everything before the graft block is copied as-is, v0.0.9 errors included: the V2 combo
   negatives from ~88.9M, and the NegRiskAdapter leak (+$106 / +$4) on two USDC.e markets
   at 81.4–82.0M. Only blocks after it run the new code.
 - `V2ComboCredit` (the only schema change, additive) starts empty, so combo / bridge tokens
   minted before the graft are not in the open inventory. Markets that went negative before
-  95.0M stay negative; the cap only lowers `amount`, so it can release old leftovers on
+  97.5M stay negative; the cap only lowers `amount`, so it can release old leftovers on
   binary markets but never repairs a negative one.
 
 Use it to test the fixes on live data quickly. The default `subgraph.yaml` (no `graft`) is
