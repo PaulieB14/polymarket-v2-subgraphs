@@ -1,6 +1,7 @@
 # open-interest (V2)
 
-Version **v0.0.10**. v0.0.9 is deployment `QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS`.
+Version **v0.0.12**. v0.0.11 (graft build of v0.0.10 at 97,500,000) is deployment
+`QmXtYq1HAKSRmbwFuKMktT8fpgjvEp4D3JKHSj1YLaXvPY`; v0.0.9 is deployment `QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS`.
 
 Per-market and global Open Interest for Polymarket on Polygon, in USDC (6 decimals).
 `amount` is unpriced collateral locked in outcome tokens: splits add, merges and
@@ -85,6 +86,13 @@ hourly snapshots, decimal amounts).
   open, `(yesSupply * n0 + noSupply * n1) / (n0 + n1)` once resolved. The excess leaves
   `amount` and global OI. The cap only lowers `amount`. Check after a sync: no V2 binary
   market should have `amountRaw` above that bound.
+- **Migration settlement on resolved V2 binary markets (v0.0.12):** when a module redeems
+  (or merges) escrowed legacy positions, the released collateral moves to the V2 market
+  (`KIND_MIGRATE`). On the router path (`0x17bec72f…`) the V2 tokens are often already
+  wrapped into combo or redeemed by then, so that credit landed after the last cap and was
+  never released (v0.0.11 at 97,622,500: 160 resolved markets with `yesSupply = noSupply = 0`,
+  $50,791.89). The credit is now capped to claims in the same write when the V2 market is
+  resolved; the excess also leaves global OI. Open markets and neg-risk are not capped here.
 - **V2 neg-risk per-market `amount` is not conserved.** `convert` and HorizontalSplit /
   HorizontalMerge mint or burn YES across an event without a per-market credit, so
   per-market `amount` on V2 neg-risk markets is bookkeeping only (the cap is not applied
@@ -139,7 +147,7 @@ from.
 
 ## Grafting (iteration build only)
 
-`subgraph.graft.yaml` grafts v0.0.10 onto v0.0.9
+`subgraph.graft.yaml` grafts v0.0.12 onto v0.0.9
 (`QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS`) at block **97,500,000**, a small margin
 above 97,427,800, the earliest block the indexer still holds for v0.0.9 (`prune: auto`; the
 pruned range moves forward with the chain head, so re-check before each graft deploy). Graph Node's graft validation does
@@ -157,7 +165,7 @@ What a graft at 97,500,000 means:
   binary markets but never repairs a negative one.
 
 Use it to test the fixes on live data quickly. The default `subgraph.yaml` (no `graft`) is
-the real v0.0.10: one full resync from the CTF start block (4,023,686) once the fixes are
+the real release: one full resync from the CTF start block (4,023,686) once the fixes are
 confirmed. Do not publish the grafted build to the decentralized network unless every
 indexer has the base deployment.
 

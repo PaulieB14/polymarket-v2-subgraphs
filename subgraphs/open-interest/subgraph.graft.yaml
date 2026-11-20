@@ -1,7 +1,7 @@
 specVersion: 1.2.0
 indexerHints:
   prune: auto
-# Grafted manifest for fast iteration (v0.0.10-graft). Base: v0.0.9
+# Grafted manifest for fast iteration (v0.0.12-graft: v0.0.11 + migration-settlement cap). Base: v0.0.9
 # (QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS, prune: auto). Block 97,500,000 is
 # a small margin above 97,427,800, the earliest block the indexer (Ellipra) still holds
 # for the base after auto-pruning; the pruned range moves forward with the chain head.

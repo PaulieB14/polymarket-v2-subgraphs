@@ -400,13 +400,26 @@ export function migrationSettlement(w: MarketWrite, released: BigInt, event: eth
   let link = MigrationLink.load(w.id)
   if (link == null) return false
   let created = w.commit()
+  let capped = BI_ZERO
   if (!released.isZero()) {
     let v2 = link.counterpart.toHexString()
-    let v = v2Write(v2, isNegRiskId(v2), event)
+    let negRisk = isNegRiskId(v2)
+    let v = v2Write(v2, negRisk, event)
     v.amount(released, KIND_MIGRATE)
+    // Migrating resolved legacy positions: the module redeems them on the CTF after the V2
+    // tokens were minted and (on the router path) already wrapped or redeemed, so the cap
+    // those burns ran is behind us and nothing later would release this credit. On a
+    // resolved V2 binary market, cap the credit to what the V2 tokens can still claim (same
+    // write). Open markets are not capped here (their V2 mints / later moves still apply).
+    let m = v.market
+    if (m != null && m.resolved) {
+      capped = claimExcess(m, negRisk)
+      if (!capped.isZero()) v.amount(capped.neg(), KIND_COMBO)
+    }
     created += v2Commit(v)
   }
-  applyGlobal(BI_ZERO, created, false, event)
+  // Settlement moves collateral legacy -> V2 (global unchanged); a capped excess leaves OI.
+  applyGlobal(capped.neg(), created, !capped.isZero(), event)
   return true
 }
 
