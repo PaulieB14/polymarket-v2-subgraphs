@@ -1,6 +1,7 @@
 # orderbook (V2)
 
-Indexes `OrderFilled` and `OrdersMatched` from Polymarket's three V2 exchanges on Polygon.
+Indexes `OrderFilled` from Polymarket's three V2 exchanges on Polygon. `OrdersMatched` is not
+indexed: it is an exact copy of the taker order's own `OrderFilled` (214/214 sampled on-chain).
 
 ## Data sources
 
@@ -19,7 +20,7 @@ none are needed (fees are already on each `OrderFilled`).
 
 Each match emits one `OrderFilled` per maker order (`taker` = taker address), then one
 `OrderFilled` for the taker order whose `taker` is **the exchange contract**, then `OrdersMatched`
-(an exact copy of the taker fill's amounts).
+(an exact copy of the taker fill; not indexed - query `orderFilledEvents(where:{isTakerFill:true})`).
 
 * COMPLEMENTARY makers (opposite side, same token): the taker fill mirrors them.
 * MINT (both BUY, complement tokens) / MERGE (both SELL): the taker's collateral is new money.
@@ -42,12 +43,34 @@ of 1..3, so the module byte alone misclassifies). `module` is 0 for legacy CTF i
 ## Entities
 
 - `OrderFilledEvent` (immutable, Bytes id = txHash ++ logIndex)
-- `OrdersMatchedEvent` (immutable; redundant with the taker `OrderFilledEvent`, kept for compatibility)
-- `Market` — per-tokenId rollups (id stays the decimal tokenId string = CLOB token_id)
+- `Market` — per-tokenId rollups. `id` = tokenId as 32-byte big-endian Bytes; `tokenId` (BigInt) and
+  `clobTokenId` (decimal String) hold the CLOB token_id
 - `Account`, `Builder`, `GlobalStats` — rollups (Bytes ids)
 - `Trade` timeseries → `MarketCandle` (hour/day OHLC, volume, count per token) and
   `ExchangeVolume` (hour/day per exchange, cumulative) aggregations
 - `MatchScratch` — internal per-exchange accumulator for the match in progress
+
+## Migrating queries from v0.0.1
+
+| | old (v0.0.1) | new |
+|---|---|---|
+| market by CLOB token id | `market(id: "6733…7872")` | `markets(where: {tokenId: "6733…7872"})` (or `clobTokenId: "…"`); or `market(id: "0x" + 64-hex of tokenId)` |
+| fill/market relation | `orderFilledEvents(where: {market: "6733…7872"})` | `orderFilledEvents(where: {tokenId: "6733…7872"})` or `{market: "0x017d…00"}` |
+| market's decimal id | `market { id }` | `market { clobTokenId }` |
+| fill id | `"0x<tx>-<logIndex>"` | `0x<tx><logIndex as 4-byte hex>`; use `transactionHash` + `logIndex` |
+| taker | `taker { id }` | `taker` (Bytes; the exchange address on taker fills) |
+| taker-side events | `ordersMatchedEvents { takerOrderHash takerOrderMaker { id } side tokenId makerAmountFilled takerAmountFilled }` | `orderFilledEvents(where: {isTakerFill: true}) { orderHash maker { id } side tokenId makerAmountFilled takerAmountFilled }` |
+| global stats | `globalStats(id: "global")` | `globalStats(id: "0x676c6f62616c")` |
+| join to OI | n/a | `markets(where: {conditionId: "<MarketOpenInterest.id>"})` (V2 tokens) |
+
+Example:
+
+```graphql
+# old
+{ market(id: "673375820099379269761014006244372837799090532969111081655717424084258127872") { lastPrice } }
+# new
+{ markets(where: { tokenId: "673375820099379269761014006244372837799090532969111081655717424084258127872" }) { id clobTokenId conditionId outcomeIndex lastPrice } }
+```
 
 ## Commands
 

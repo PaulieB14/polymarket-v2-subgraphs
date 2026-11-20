@@ -1,13 +1,13 @@
 import { assert, beforeEach, clearStore, describe, newMockEvent, test } from "matchstick-as/assembly/index"
 import { Address, BigInt, Bytes, ethereum } from "@graphprotocol/graph-ts"
-import { OrderFilled as CtfFilled, OrdersMatched as CtfMatched } from "../generated/CtfExchangeV2/CtfExchangeV2"
+import { OrderFilled as CtfFilled } from "../generated/CtfExchangeV2/CtfExchangeV2"
 import { OrderFilled as NrFilled } from "../generated/NegRiskCtfExchangeV2/NegRiskCtfExchangeV2"
-import { OrderFilled as MgFilled, OrdersMatched as MgMatched } from "../generated/MigratableExchange/MigratableExchange"
+import { OrderFilled as MgFilled } from "../generated/MigratableExchange/MigratableExchange"
 import {
-  handleOrderFilled, handleOrdersMatched, handleOrderFilledNegRisk,
-  handleOrderFilledMigratable, handleOrdersMatchedMigratable, setTradeTimeseriesEnabled,
+  handleOrderFilled, handleOrderFilledNegRisk,
+  handleOrderFilledMigratable, setTradeTimeseriesEnabled,
 } from "../src/mapping"
-import { decodeTokenId, toBytes32 } from "../src/ids"
+import { decodeTokenId, toBytes32, marketId } from "../src/ids"
 
 const CTF_EX = Address.fromString("0xe111180000d2663c0091e4f400237545b87b996b")
 const NR_EX = Address.fromString("0xe2222d279d744050d28e00520010520000310f59")
@@ -74,6 +74,7 @@ function mgFill(maker: Address, taker: Address, side: i32, tokenId: BigInt, mA: 
   fillParams(e, maker, taker, side, tokenId, mA, tA, fee, ZERO32); handleOrderFilledMigratable(e)
 }
 function fid(li: i32): string { return TX.concatI32(li).toHexString() }
+function mid(tok: BigInt): string { return marketId(tok).toHexString() }
 
 describe("token id decoding", () => {
   test("binary V2: module 1, conditionId = id & ~0xff, outcome 0/1", () => {
@@ -126,12 +127,12 @@ describe("fill accounting", () => {
     assert.fieldEquals("GlobalStats", GLOBAL, "collateralVolume", "60000000")
     assert.fieldEquals("GlobalStats", GLOBAL, "collateralFees", "3000")
     assert.fieldEquals("GlobalStats", GLOBAL, "tradersCount", "2")
-    assert.fieldEquals("Market", V1_SMALL, "tradesQuantity", "1")
-    assert.fieldEquals("Market", V1_SMALL, "sellsQuantity", "1")
-    assert.fieldEquals("Market", V1_SMALL, "collateralVolume", "60000000")
-    assert.fieldEquals("Market", V1_SMALL, "collateralFees", "3000")
-    assert.fieldEquals("Market", V1_SMALL, "lastPrice", "0.6")
-    assert.fieldEquals("Market", V1_SMALL, "module", "0")
+    assert.fieldEquals("Market", mid(bi(V1_SMALL)), "tradesQuantity", "1")
+    assert.fieldEquals("Market", mid(bi(V1_SMALL)), "sellsQuantity", "1")
+    assert.fieldEquals("Market", mid(bi(V1_SMALL)), "collateralVolume", "60000000")
+    assert.fieldEquals("Market", mid(bi(V1_SMALL)), "collateralFees", "3000")
+    assert.fieldEquals("Market", mid(bi(V1_SMALL)), "lastPrice", "0.6")
+    assert.fieldEquals("Market", mid(bi(V1_SMALL)), "module", "0")
     assert.notInStore("Account", CTF_EX.toHexString())
     assert.fieldEquals("Account", ALICE.toHexString(), "tradesQuantity", "1")
     assert.fieldEquals("Account", ALICE.toHexString(), "sellsQuantity", "1")
@@ -157,7 +158,7 @@ describe("fill accounting", () => {
     assert.fieldEquals("GlobalStats", GLOBAL, "collateralVolume", "51000000")
     assert.fieldEquals("Account", BOB.toHexString(), "collateralVolume", "51000000")
     assert.fieldEquals("Account", BOB.toHexString(), "tradesQuantity", "1")
-    assert.fieldEquals("Market", V1_SMALL, "lastPrice", "0.51")
+    assert.fieldEquals("Market", mid(bi(V1_SMALL)), "lastPrice", "0.51")
   })
 
   test("neg-risk exchange tags NEG_RISK and taker detection uses the emitting exchange", () => {
@@ -166,7 +167,7 @@ describe("fill accounting", () => {
     assert.fieldEquals("OrderFilledEvent", fid(5), "exchange", "NEG_RISK")
     assert.fieldEquals("OrderFilledEvent", fid(5), "isTakerFill", "true")
     assert.fieldEquals("OrderFilledEvent", fid(5), "conditionId", NR_COND)
-    assert.fieldEquals("Market", NR_TOK, "module", "2")
+    assert.fieldEquals("Market", mid(bi(NR_TOK)), "module", "2")
     // a taker fill with no preceding maker fills is all net
     assert.fieldEquals("GlobalStats", GLOBAL, "tradesQuantity", "1")
     assert.fieldEquals("GlobalStats", GLOBAL, "collateralVolume", "30000000")
@@ -179,8 +180,8 @@ describe("fill accounting", () => {
     ctfFill(BOB, CTF_EX, 1, yes, 10000000, 6500000, 0, 2)
     assert.fieldEquals("GlobalStats", GLOBAL, "collateralVolume", "10000000")
     assert.fieldEquals("GlobalStats", GLOBAL, "tradesQuantity", "2")
-    assert.fieldEquals("Market", no.toString(), "collateralVolume", "3500000")
-    assert.fieldEquals("Market", yes.toString(), "collateralVolume", "6500000")
+    assert.fieldEquals("Market", mid(no), "collateralVolume", "3500000")
+    assert.fieldEquals("Market", mid(yes), "collateralVolume", "6500000")
   })
 
   test("mixed match: complementary part mirrored, MINT part counted", () => {
@@ -192,8 +193,8 @@ describe("fill accounting", () => {
     ctfFill(BOB, CTF_EX, 0, yes, 57500000, 100000000, 0, 3)
     assert.fieldEquals("OrderFilledEvent", fid(3), "netCollateral", "27500000")
     assert.fieldEquals("GlobalStats", GLOBAL, "collateralVolume", "80000000")
-    assert.fieldEquals("Market", yes.toString(), "collateralVolume", "57500000")
-    assert.fieldEquals("Market", no.toString(), "collateralVolume", "22500000")
+    assert.fieldEquals("Market", mid(yes), "collateralVolume", "57500000")
+    assert.fieldEquals("Market", mid(no), "collateralVolume", "22500000")
   })
 
   test("scratch resets across transactions and after each taker fill", () => {
@@ -238,9 +239,9 @@ describe("MigratableExchange (V2 PositionManager tokens)", () => {
     assert.fieldEquals("OrderFilledEvent", fid(7), "module", "1")
     assert.fieldEquals("OrderFilledEvent", fid(7), "conditionId", BIN_COND)
     assert.fieldEquals("OrderFilledEvent", fid(7), "outcomeIndex", "0")
-    assert.fieldEquals("Market", BIN_YES, "conditionId", BIN_COND)
-    assert.fieldEquals("Market", BIN_YES, "outcomeIndex", "0")
-    assert.fieldEquals("Market", BIN_YES, "lastPrice", "0.42")
+    assert.fieldEquals("Market", mid(bi(BIN_YES)), "conditionId", BIN_COND)
+    assert.fieldEquals("Market", mid(bi(BIN_YES)), "outcomeIndex", "0")
+    assert.fieldEquals("Market", mid(bi(BIN_YES)), "lastPrice", "0.42")
   })
 
   test("real MINT tx 0x6fe9737d (block 97610012): 3 maker BUYs on NO + taker BUY on YES = 1313.424277 volume", () => {
@@ -257,50 +258,53 @@ describe("MigratableExchange (V2 PositionManager tokens)", () => {
     assert.fieldEquals("GlobalStats", GLOBAL, "collateralVolume", "1313424277")
     assert.fieldEquals("GlobalStats", GLOBAL, "tradesQuantity", "4")
     assert.fieldEquals("GlobalStats", GLOBAL, "collateralFees", "12245930")
-    assert.fieldEquals("Market", yes.toString(), "collateralVolume", "987754069")
-    assert.fieldEquals("Market", yes.toString(), "module", "3")
+    assert.fieldEquals("Market", mid(yes), "collateralVolume", "987754069")
+    assert.fieldEquals("Market", mid(yes), "module", "3")
     assert.fieldEquals("Account", tk.toHexString(), "collateralVolume", "987754069")
     assert.notInStore("Account", MG_EX.toHexString())
   })
 
-  test("combinatorial fill + matched: module 3, no crash, OrdersMatched creates no Account", () => {
+  test("combinatorial (module 3) maker + taker fill: indexed, no crash, single trade", () => {
     let combo = hexToBI(COMBO_TOK_HEX)
     mgFill(ALICE, BOB, 0, combo, 4991977, 5510000, 0, 1)
     mgFill(BOB, MG_EX, 1, combo, 5510000, 4991977, 0, 2)
-    let m = changetype<MgMatched>(newMockEvent()); prep(m, MG_EX, 3)
-    m.parameters = [
-      new ethereum.EventParam("takerOrderHash", ethereum.Value.fromFixedBytes(ZERO32)),
-      new ethereum.EventParam("takerOrderMaker", ethereum.Value.fromAddress(CAROL)),
-      new ethereum.EventParam("side", ethereum.Value.fromI32(1)),
-      new ethereum.EventParam("tokenId", ethereum.Value.fromUnsignedBigInt(combo)),
-      new ethereum.EventParam("makerAmountFilled", ethereum.Value.fromUnsignedBigInt(BigInt.fromI32(5510000))),
-      new ethereum.EventParam("takerAmountFilled", ethereum.Value.fromUnsignedBigInt(BigInt.fromI32(4991977))),
-    ]
-    handleOrdersMatchedMigratable(m)
-    let id = combo.toString()
-    assert.fieldEquals("Market", id, "module", "3")
-    assert.fieldEquals("Market", id, "tradesQuantity", "1")
-    assert.fieldEquals("OrdersMatchedEvent", fid(3), "exchange", "MIGRATABLE")
-    assert.fieldEquals("OrdersMatchedEvent", fid(3), "market", id)
-    assert.notInStore("Account", CAROL.toHexString())
+    assert.fieldEquals("Market", mid(combo), "module", "3")
+    assert.fieldEquals("Market", mid(combo), "tradesQuantity", "1")
+    assert.fieldEquals("OrderFilledEvent", fid(2), "exchange", "MIGRATABLE")
     assert.notInStore("Account", MG_EX.toHexString())
   })
 })
 
-describe("CTF OrdersMatched", () => {
+describe("Bytes market ids / OrdersMatched removed", () => {
   beforeEach(() => { clearStore(); setTradeTimeseriesEnabled(false) })
-  test("stores Bytes id, takerOrderMaker as Bytes", () => {
-    let m = changetype<CtfMatched>(newMockEvent()); prep(m, CTF_EX, 9)
-    m.parameters = [
-      new ethereum.EventParam("takerOrderHash", ethereum.Value.fromFixedBytes(ZERO32)),
-      new ethereum.EventParam("takerOrderMaker", ethereum.Value.fromAddress(BOB)),
-      new ethereum.EventParam("side", ethereum.Value.fromI32(0)),
-      new ethereum.EventParam("tokenId", ethereum.Value.fromUnsignedBigInt(bi(V1_SMALL))),
-      new ethereum.EventParam("makerAmountFilled", ethereum.Value.fromUnsignedBigInt(BigInt.fromI32(1))),
-      new ethereum.EventParam("takerAmountFilled", ethereum.Value.fromUnsignedBigInt(BigInt.fromI32(2))),
-    ]
-    handleOrdersMatched(m)
-    assert.fieldEquals("OrdersMatchedEvent", fid(9), "takerOrderMaker", BOB.toHexString())
-    assert.fieldEquals("OrdersMatchedEvent", fid(9), "exchange", "CTF")
+
+  test("Market id is the 32-byte tokenId; tokenId and clobTokenId keep the CLOB token id", () => {
+    ctfFill(ALICE, BOB, 1, bi(V1_SMALL), 10000000, 6000000, 0, 1)
+    let id = mid(bi(V1_SMALL))
+    assert.i32Equals(66, id.length)
+    assert.fieldEquals("Market", id, "tokenId", V1_SMALL)
+    assert.fieldEquals("Market", id, "clobTokenId", V1_SMALL)
+    assert.fieldEquals("OrderFilledEvent", fid(1), "market", id)
+    assert.notInStore("Market", V1_SMALL)
+  })
+
+  test("small tokenId is left-padded to 32 bytes", () => {
+    ctfFill(ALICE, BOB, 1, BigInt.fromI32(255), 1, 1, 0, 1)
+    assert.fieldEquals("Market", "0x00000000000000000000000000000000000000000000000000000000000000ff", "clobTokenId", "255")
+  })
+
+  test("taker fill carries everything OrdersMatched had (hash, owner, side, tokenId, amounts)", () => {
+    let e = changetype<CtfFilled>(newMockEvent()); prep(e, CTF_EX, 4)
+    let h = Bytes.fromHexString("0xabababababababababababababababababababababababababababababababab")
+    fillParams(e, BOB, CTF_EX, 0, bi(V1_SMALL), 57500000, 100000000, 0, ZERO32)
+    e.parameters[0] = new ethereum.EventParam("orderHash", ethereum.Value.fromFixedBytes(h))
+    handleOrderFilled(e)
+    assert.fieldEquals("OrderFilledEvent", fid(4), "orderHash", h.toHexString())
+    assert.fieldEquals("OrderFilledEvent", fid(4), "maker", BOB.toHexString())
+    assert.fieldEquals("OrderFilledEvent", fid(4), "isTakerFill", "true")
+    assert.fieldEquals("OrderFilledEvent", fid(4), "side", "0")
+    assert.fieldEquals("OrderFilledEvent", fid(4), "makerAmountFilled", "57500000")
+    assert.fieldEquals("OrderFilledEvent", fid(4), "takerAmountFilled", "100000000")
+    assert.entityCount("OrderFilledEvent", 1)
   })
 })

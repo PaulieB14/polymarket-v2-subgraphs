@@ -52,3 +52,9 @@ export function decodeTokenId(tokenId: BigInt): TokenInfo {
   cond[31] = 0
   return new TokenInfo(module, cond, b[31] as i32)
 }
+
+/** Market entity id: tokenId as 32-byte big-endian Bytes (uint256 always fits). */
+export function marketId(tokenId: BigInt): Bytes {
+  let b = toBytes32(tokenId)
+  return b === null ? Bytes.fromUTF8(tokenId.toString()) : (b as Bytes) // fallback unreachable for uint256
+}

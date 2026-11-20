@@ -1,19 +1,9 @@
 import { BigInt, BigDecimal, Address, Bytes, ethereum } from "@graphprotocol/graph-ts"
-import {
-  OrderFilled as CtfOrderFilledEvent,
-  OrdersMatched as CtfOrdersMatchedEvent,
-} from "../generated/CtfExchangeV2/CtfExchangeV2"
-import {
-  OrderFilled as NegRiskOrderFilledEvent,
-  OrdersMatched as NegRiskOrdersMatchedEvent,
-} from "../generated/NegRiskCtfExchangeV2/NegRiskCtfExchangeV2"
-import {
-  OrderFilled as MigratableOrderFilledEvent,
-  OrdersMatched as MigratableOrdersMatchedEvent,
-} from "../generated/MigratableExchange/MigratableExchange"
+import { OrderFilled as CtfOrderFilledEvent } from "../generated/CtfExchangeV2/CtfExchangeV2"
+import { OrderFilled as NegRiskOrderFilledEvent } from "../generated/NegRiskCtfExchangeV2/NegRiskCtfExchangeV2"
+import { OrderFilled as MigratableOrderFilledEvent } from "../generated/MigratableExchange/MigratableExchange"
 import {
   OrderFilledEvent,
-  OrdersMatchedEvent,
   Account,
   Market,
   GlobalStats,
@@ -21,7 +11,7 @@ import {
   Trade,
   MatchScratch,
 } from "../generated/schema"
-import { decodeTokenId, TokenInfo } from "./ids"
+import { decodeTokenId, marketId, TokenInfo } from "./ids"
 
 const USDC_UNIT = BigDecimal.fromString("1000000")
 export const GLOBAL_ID = Bytes.fromUTF8("global")
@@ -84,11 +74,12 @@ function loadAccount(address: Address, g: GlobalStats): Account {
 }
 
 function loadMarket(tokenId: BigInt, info: TokenInfo, g: GlobalStats): Market {
-  let id = tokenId.toString()
+  let id = marketId(tokenId)
   let m = Market.load(id)
   if (m === null) {
     m = new Market(id)
     m.tokenId = tokenId
+    m.clobTokenId = tokenId.toString()
     m.module = info.module
     m.conditionId = info.conditionId
     if (info.conditionId !== null) m.outcomeIndex = info.outcomeIndex
@@ -295,50 +286,4 @@ export function handleOrderFilledMigratable(event: MigratableOrderFilledEvent): 
   let p = event.params
   recordFill(event, p.orderHash, p.maker, p.taker, p.side, p.tokenId, p.makerAmountFilled,
     p.takerAmountFilled, p.fee, p.builder, p.metadata, EXCHANGE_MIGRATABLE)
-}
-
-// OrdersMatched follows the taker order's OrderFilled (same tokenId) in the same tx, so the
-// Market already exists; no store loads here.
-export function recordMatched(
-  event: ethereum.Event,
-  takerOrderHash: Bytes,
-  takerOrderMaker: Address,
-  side: i32,
-  tokenId: BigInt,
-  makerAmountFilled: BigInt,
-  takerAmountFilled: BigInt,
-  exchange: string
-): void {
-  let ev = new OrdersMatchedEvent(eventId(event))
-  ev.transactionHash = event.transaction.hash
-  ev.logIndex = event.logIndex
-  ev.timestamp = event.block.timestamp
-  ev.blockNumber = event.block.number
-  ev.takerOrderHash = takerOrderHash
-  ev.takerOrderMaker = takerOrderMaker
-  ev.side = side
-  ev.market = tokenId.toString()
-  ev.tokenId = tokenId
-  ev.makerAmountFilled = makerAmountFilled
-  ev.takerAmountFilled = takerAmountFilled
-  ev.exchange = exchange
-  ev.save()
-}
-
-export function handleOrdersMatched(event: CtfOrdersMatchedEvent): void {
-  let p = event.params
-  recordMatched(event, p.takerOrderHash, p.takerOrderMaker, p.side, p.tokenId,
-    p.makerAmountFilled, p.takerAmountFilled, EXCHANGE_CTF)
-}
-
-export function handleOrdersMatchedNegRisk(event: NegRiskOrdersMatchedEvent): void {
-  let p = event.params
-  recordMatched(event, p.takerOrderHash, p.takerOrderMaker, p.side, p.tokenId,
-    p.makerAmountFilled, p.takerAmountFilled, EXCHANGE_NEG_RISK)
-}
-
-export function handleOrdersMatchedMigratable(event: MigratableOrdersMatchedEvent): void {
-  let p = event.params
-  recordMatched(event, p.takerOrderHash, p.takerOrderMaker, p.side, p.tokenId,
-    p.makerAmountFilled, p.takerAmountFilled, EXCHANGE_MIGRATABLE)
 }

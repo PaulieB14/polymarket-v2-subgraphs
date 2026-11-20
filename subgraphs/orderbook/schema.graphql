@@ -2,7 +2,8 @@
 #
 # Fill semantics (all three exchanges): every match emits one OrderFilled per maker
 # order (taker = the taker's address) plus one OrderFilled for the taker order whose
-# `taker` is the exchange contract itself, followed by one OrdersMatched.
+# `taker` is the exchange contract itself. The OrdersMatched that follows is an exact
+# copy of that taker fill and is not indexed.
 # Makers on the opposite side of the taker on the same token are COMPLEMENTARY (the
 # taker fill mirrors them exactly); makers on the same side hold the complement token
 # and are matched by MINT (both BUY, split) or MERGE (both SELL) - there the taker's
@@ -61,22 +62,6 @@ type OrderFilledEvent @entity(immutable: true) {
   exchange: ExchangeType!
 }
 
-type OrdersMatchedEvent @entity(immutable: true) {
-  id: Bytes!                            # txHash ++ logIndex
-  transactionHash: Bytes!
-  logIndex: BigInt!
-  timestamp: BigInt!
-  blockNumber: BigInt!
-  takerOrderHash: Bytes!
-  takerOrderMaker: Bytes!
-  side: Int!
-  market: Market!
-  tokenId: BigInt!
-  makerAmountFilled: BigInt!
-  takerAmountFilled: BigInt!
-  exchange: ExchangeType!
-}
-
 type Account @entity(immutable: false) {
   id: Bytes!                            # address
   tradesQuantity: BigInt!               # fills of this account's own orders
@@ -90,8 +75,9 @@ type Account @entity(immutable: false) {
 }
 
 type Market @entity(immutable: false) {
-  id: ID!                               # tokenId decimal string (matches CLOB token_id)
-  tokenId: BigInt!
+  id: Bytes!                            # tokenId as 32-byte big-endian
+  tokenId: BigInt!                      # CLOB token_id (filter: markets(where:{tokenId:"..."}))
+  clobTokenId: String!                  # tokenId as decimal string (same as the old Market.id)
   conditionId: Bytes                    # V2: tokenId & ~0xff == OI MarketOpenInterest.id; V1: null
   outcomeIndex: Int                     # V2 only
   module: Int!                          # 0 V1/CTF, 1 binary, 2 neg-risk, 3 combinatorial
