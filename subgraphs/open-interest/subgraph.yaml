@@ -1,3 +1,4 @@
+# Polymarket open-interest v0.0.12: full resync from the CTF start block (no graft).
 specVersion: 1.2.0
 indexerHints:
   prune: auto
