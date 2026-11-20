@@ -1,7 +1,8 @@
 # open-interest (V2)
 
-Version **v0.0.12**. v0.0.11 (graft build of v0.0.10 at 97,500,000) is deployment
-`QmXtYq1HAKSRmbwFuKMktT8fpgjvEp4D3JKHSj1YLaXvPY`; v0.0.9 is deployment `QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS`.
+Version **v0.0.12**, a full resync from the CTF start block (no graft). v0.0.11 (graft build
+of v0.0.10 on v0.0.9 at 97,500,000) is deployment `QmXtYq1HAKSRmbwFuKMktT8fpgjvEp4D3JKHSj1YLaXvPY`;
+v0.0.9 is deployment `QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS`.
 
 Per-market and global Open Interest for Polymarket on Polygon, in USDC (6 decimals).
 `amount` is unpriced collateral locked in outcome tokens: splits add, merges and
@@ -145,33 +146,18 @@ from.
 - `OISnapshot`: hourly per-market snapshots
 - `GlobalOpenInterest`: platform total (`id: "global"`)
 
-## Grafting (iteration build only)
+## Release: full resync (v0.0.12)
 
-`subgraph.graft.yaml` grafts v0.0.12 onto v0.0.9
-(`QmR9i4t7qU5dRv4NeFDvkn6ZXSWhMda63zuX6wh14cWpFS`) at block **97,500,000**, a small margin
-above 97,427,800, the earliest block the indexer still holds for v0.0.9 (`prune: auto`; the
-pruned range moves forward with the chain head, so re-check before each graft deploy). Graph Node's graft validation does
-not check the base's earliest retained block, so a graft below the pruned range would copy
-an incomplete state without an error; do not lower the block.
+v0.0.12 ships as a full resync from the CTF start block (4,023,686), with no graft. The
+v0.0.11 graft build (`subgraph.graft.yaml`, removed) copied v0.0.9 state up to 97,500,000,
+including its errors. A full resync recomputes them with the current code:
 
-What a graft at 97,500,000 means:
+- V2 combo negatives from ~88.9M (v0.0.9: 978 markets, -$1.017M at 97,480,000)
+- pre-graft V2 binary markets above their claim bound (967, $714.8k)
+- the NegRiskAdapter credit on two USDC.e binary markets at 81.4-82.0M (+$106 / +$4)
+- the migration-settlement leak (160 markets, $50,791.89 on v0.0.11 at 97,622,500)
 
-- Everything before the graft block is copied as-is, v0.0.9 errors included: the V2 combo
-  negatives from ~88.9M, and the NegRiskAdapter leak (+$106 / +$4) on two USDC.e markets
-  at 81.4–82.0M. Only blocks after it run the new code.
-- `V2ComboCredit` (the only schema change, additive) starts empty, so combo / bridge tokens
-  minted before the graft are not in the open inventory. Markets that went negative before
-  97.5M stay negative; the cap only lowers `amount`, so it can release old leftovers on
-  binary markets but never repairs a negative one.
-
-Use it to test the fixes on live data quickly. The default `subgraph.yaml` (no `graft`) is
-the real release: one full resync from the CTF start block (4,023,686) once the fixes are
-confirmed. Do not publish the grafted build to the decentralized network unless every
-indexer has the base deployment.
-
-```bash
-graph deploy --studio <slug> subgraphs/open-interest/subgraph.graft.yaml
-```
+`V2ComboCredit` is populated from the first combo / bridge move, so open inventory is complete.
 
 After any sync, run the `/v2/oi` comparison at head (`scripts/validate_priced_oi_extensive.py`
 checks the 5 `polyv2` seed markets) and count V2 binary markets with `amountRaw` above the
