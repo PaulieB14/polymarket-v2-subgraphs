@@ -2,17 +2,18 @@
   "name": "polymarket-v2-orderbook-subgraph",
   "version": "0.1.0",
   "private": true,
-  "description": "Polymarket CLOB V2 orderbook subgraph — CTF Exchange V2 + Neg Risk Exchange V2",
+  "description": "Polymarket CLOB V2 orderbook subgraph \u2014 CTF Exchange V2 + Neg Risk Exchange V2",
   "scripts": {
     "codegen": "graph codegen",
     "build": "graph build",
-    "deploy": "graph deploy --studio polymarket-v2-orderbook",
     "create-local": "graph create --node http://localhost:8020/ polymarket-v2-orderbook",
     "deploy-local": "graph deploy --node http://localhost:8020/ --ipfs http://localhost:5001 polymarket-v2-orderbook",
-    "test": "graph test"
+    "test": "bash scripts/run-matchstick.sh",
+    "test:graph": "graph test"
   },
   "devDependencies": {
     "@graphprotocol/graph-cli": "^0.98.1",
-    "@graphprotocol/graph-ts": "^0.38.2"
+    "@graphprotocol/graph-ts": "^0.38.2",
+    "matchstick-as": "^0.6.0"
   }
 }

@@ -1,47 +1,74 @@
+# Polymarket V2 orderbook.
+#
+# Fill semantics (all three exchanges): every match emits one OrderFilled per maker
+# order (taker = the taker's address) plus one OrderFilled for the taker order whose
+# `taker` is the exchange contract itself, followed by one OrdersMatched.
+# Makers on the opposite side of the taker on the same token are COMPLEMENTARY (the
+# taker fill mirrors them exactly); makers on the same side hold the complement token
+# and are matched by MINT (both BUY, split) or MERGE (both SELL) - there the taker's
+# collateral is new money, not a mirror. Counting every OrderFilled (the old mapping)
+# double-counts the complementary part. Rules:
+#   - volume (GlobalStats, Market, Trade timeseries) = every maker fill
+#     + the taker fill's netCollateral = taker collateral - complementary maker collateral
+#     (0 for pure complementary matches, the full taker amount for MINT/MERGE)
+#   - trade counts = volume-contributing fills (maker fills + taker fills with net > 0)
+#   - fees use every fill (maker fees live on maker fills, the taker fee on the taker fill)
+#   - Account and Builder stats are per order owner: each fill credits its own
+#     order's owner (`maker`) once, so the taker is credited via the taker fill and
+#     the exchange contract never becomes an Account.
+
 type GlobalStats @entity(immutable: false) {
-  id: ID!                               # singleton "global"
-  tradesQuantity: BigInt!
+  id: Bytes!                            # singleton 0x676c6f62616c ("global")
+  tradesQuantity: BigInt!               # volume-contributing fills
   buysQuantity: BigInt!
   sellsQuantity: BigInt!
-  collateralVolume: BigInt!             # raw (USDC.e 6dp)
-  scaledCollateralVolume: BigDecimal!   # normalized
-  collateralFees: BigInt!
+  collateralVolume: BigInt!             # raw 6dp, see rules above
+  scaledCollateralVolume: BigDecimal!
+  collateralFees: BigInt!               # all fills (maker + taker fees)
   scaledCollateralFees: BigDecimal!
+  takerFillsQuantity: BigInt!           # taker-order fills (matches)
   tradersCount: BigInt!
   marketsCount: BigInt!
   buildersCount: BigInt!
 }
 
 type OrderFilledEvent @entity(immutable: true) {
-  id: ID!                               # txHash-logIndex
+  id: Bytes!                            # txHash ++ logIndex (concatI32)
   transactionHash: Bytes!
+  logIndex: BigInt!
   timestamp: BigInt!
   blockNumber: BigInt!
   orderHash: Bytes!
-  maker: Account!
-  taker: Account!
-  side: Int!                            # 0 BUY, 1 SELL (from Side enum)
+  maker: Account!                       # owner of the filled order
+  taker: Bytes!                         # counterparty; the exchange address on taker fills
+  isTakerFill: Boolean!                 # taker == emitting exchange (the taker order's own fill)
+  netCollateral: BigInt!                # collateral this fill adds to volume (see rules above)
+  side: Int!                            # 0 BUY, 1 SELL (side of the filled order)
   market: Market!
   tokenId: BigInt!
+  conditionId: Bytes                    # V2 only (tokenId & ~0xff); null for V1 CTF tokens
+  outcomeIndex: Int                     # V2 only
+  module: Int!                          # 0 V1/CTF, 1 binary, 2 neg-risk, 3 combinatorial
   makerAmountFilled: BigInt!
   takerAmountFilled: BigInt!
-  collateralAmount: BigInt!             # derived: BUY → makerAmount, SELL → takerAmount
-  tokenAmount: BigInt!                  # derived: opposite of collateralAmount
+  collateralAmount: BigInt!             # BUY → makerAmount, SELL → takerAmount
+  tokenAmount: BigInt!
   price: BigDecimal!                    # collateralAmount / tokenAmount
   size: BigDecimal!                     # scaled tokenAmount
   fee: BigInt!
-  builder: Bytes!                       # bytes32 builder code (may be zero)
-  metadata: Bytes!                      # bytes32 metadata
+  builder: Bytes!
+  metadata: Bytes!
   exchange: ExchangeType!
 }
 
 type OrdersMatchedEvent @entity(immutable: true) {
-  id: ID!                               # txHash-logIndex
+  id: Bytes!                            # txHash ++ logIndex
   transactionHash: Bytes!
+  logIndex: BigInt!
   timestamp: BigInt!
   blockNumber: BigInt!
   takerOrderHash: Bytes!
-  takerOrderMaker: Account!
+  takerOrderMaker: Bytes!
   side: Int!
   market: Market!
   tokenId: BigInt!
@@ -51,33 +78,38 @@ type OrdersMatchedEvent @entity(immutable: true) {
 }
 
 type Account @entity(immutable: false) {
-  id: ID!                               # address hex
-  tradesQuantity: BigInt!
-  buysQuantity: BigInt!
-  sellsQuantity: BigInt!
-  collateralVolume: BigInt!
-  scaledCollateralVolume: BigDecimal!
-  lastTradedTimestamp: BigInt!
-  fills: [OrderFilledEvent!]! @derivedFrom(field: "maker")
-}
-
-type Market @entity(immutable: false) {
-  id: ID!                               # tokenId decimal string
-  tokenId: BigInt!
-  tradesQuantity: BigInt!
+  id: Bytes!                            # address
+  tradesQuantity: BigInt!               # fills of this account's own orders
   buysQuantity: BigInt!
   sellsQuantity: BigInt!
   collateralVolume: BigInt!
   scaledCollateralVolume: BigDecimal!
   collateralFees: BigInt!
+  lastTradedTimestamp: BigInt!
+  fills: [OrderFilledEvent!]! @derivedFrom(field: "maker")
+}
+
+type Market @entity(immutable: false) {
+  id: ID!                               # tokenId decimal string (matches CLOB token_id)
+  tokenId: BigInt!
+  conditionId: Bytes                    # V2: tokenId & ~0xff == OI MarketOpenInterest.id; V1: null
+  outcomeIndex: Int                     # V2 only
+  module: Int!                          # 0 V1/CTF, 1 binary, 2 neg-risk, 3 combinatorial
+  tradesQuantity: BigInt!               # volume-contributing fills on this token
+  buysQuantity: BigInt!
+  sellsQuantity: BigInt!
+  collateralVolume: BigInt!
+  scaledCollateralVolume: BigDecimal!
+  collateralFees: BigInt!               # all fills
   scaledCollateralFees: BigDecimal!
-  lastPrice: BigDecimal!
+  lastPrice: BigDecimal!                # last fill (maker or taker) on this tokenId
   lastActiveTimestamp: BigInt!
+  lastActiveBlock: BigInt!
 }
 
 type Builder @entity(immutable: false) {
-  id: ID!                               # bytes32 builder code
-  orderCount: BigInt!
+  id: Bytes!                            # bytes32 builder code
+  orderCount: BigInt!                   # fills of orders carrying this builder code
   volume: BigInt!
   scaledVolume: BigDecimal!
   fees: BigInt!
@@ -86,7 +118,53 @@ type Builder @entity(immutable: false) {
   lastSeenTimestamp: BigInt!
 }
 
+# Per-exchange scratch for the match in progress (maker fills precede the taker fill
+# in the same tx). One row per exchange; graph-node coalesces saves within a block.
+type MatchScratch @entity(immutable: false) {
+  id: Bytes!                            # exchange address
+  transactionHash: Bytes!
+  buyCollateral: BigInt!                # maker BUY fills since the last taker fill
+  sellCollateral: BigInt!
+  buyTokens: BigInt!
+  sellTokens: BigInt!
+}
+
+# One data point per volume-contributing fill; Graph Node rolls these up (no mapping work).
+type Trade @entity(timeseries: true) {
+  id: Int8!
+  timestamp: Timestamp!
+  market: Market!
+  module: Int!
+  exchange: String!
+  price: BigDecimal!
+  collateral: BigDecimal!               # scaled netCollateral
+  tokens: BigDecimal!                   # scaled tokens behind netCollateral
+}
+
+type MarketCandle @aggregation(intervals: ["hour", "day"], source: "Trade") {
+  id: Int8!
+  timestamp: Timestamp!
+  market: Market!
+  open: BigDecimal! @aggregate(fn: "first", arg: "price")
+  high: BigDecimal! @aggregate(fn: "max", arg: "price")
+  low: BigDecimal! @aggregate(fn: "min", arg: "price")
+  close: BigDecimal! @aggregate(fn: "last", arg: "price")
+  volume: BigDecimal! @aggregate(fn: "sum", arg: "collateral")
+  tokens: BigDecimal! @aggregate(fn: "sum", arg: "tokens")
+  trades: Int8! @aggregate(fn: "count")
+}
+
+type ExchangeVolume @aggregation(intervals: ["hour", "day"], source: "Trade") {
+  id: Int8!
+  timestamp: Timestamp!
+  exchange: String!
+  volume: BigDecimal! @aggregate(fn: "sum", arg: "collateral")
+  trades: Int8! @aggregate(fn: "count")
+  cumulativeVolume: BigDecimal! @aggregate(fn: "sum", arg: "collateral", cumulative: true)
+}
+
 enum ExchangeType {
   CTF
   NEG_RISK
+  MIGRATABLE
 }
