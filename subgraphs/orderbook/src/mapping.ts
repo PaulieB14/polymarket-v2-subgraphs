@@ -1,33 +1,46 @@
-import { BigInt, BigDecimal, Address, Bytes } from "@graphprotocol/graph-ts"
-import {
-  OrderFilled as CtfOrderFilledEvent,
-  OrdersMatched as CtfOrdersMatchedEvent,
-} from "../generated/CtfExchangeV2/CtfExchangeV2"
-import {
-  OrderFilled as NegRiskOrderFilledEvent,
-  OrdersMatched as NegRiskOrdersMatchedEvent,
-} from "../generated/NegRiskCtfExchangeV2/NegRiskCtfExchangeV2"
+import { BigInt, BigDecimal, Address, Bytes, ethereum } from "@graphprotocol/graph-ts"
+import { OrderFilled as CtfOrderFilledEvent } from "../generated/CtfExchangeV2/CtfExchangeV2"
+import { OrderFilled as NegRiskOrderFilledEvent } from "../generated/NegRiskCtfExchangeV2/NegRiskCtfExchangeV2"
+import { OrderFilled as MigratableOrderFilledEvent } from "../generated/MigratableExchange/MigratableExchange"
 import {
   OrderFilledEvent,
-  OrdersMatchedEvent,
   Account,
   Market,
   GlobalStats,
   Builder,
+  Trade,
+  MatchScratch,
 } from "../generated/schema"
+import { decodeTokenId, marketId, TokenInfo } from "./ids"
 
 const USDC_UNIT = BigDecimal.fromString("1000000")
-const GLOBAL_ID = "global"
+export const GLOBAL_ID = Bytes.fromUTF8("global")
 const SIDE_BUY: i32 = 0
+const ONE = BigInt.fromI32(1)
 const ZERO_BUILDER = Bytes.fromHexString("0x0000000000000000000000000000000000000000000000000000000000000000")
+
+// Matchstick (0.6.0, latest) cannot store the `Timestamp` type used by timeseries entities,
+// so unit tests switch the Trade write off. Always true in deployed builds.
+let tradeTimeseriesEnabled = true
+export function setTradeTimeseriesEnabled(v: bool): void {
+  tradeTimeseriesEnabled = v
+}
+
+export const EXCHANGE_CTF = "CTF"
+export const EXCHANGE_NEG_RISK = "NEG_RISK"
+export const EXCHANGE_MIGRATABLE = "MIGRATABLE"
 
 function scale(amount: BigInt): BigDecimal {
   return amount.toBigDecimal().div(USDC_UNIT)
 }
 
-function getOrCreateGlobal(): GlobalStats {
+function eventId(event: ethereum.Event): Bytes {
+  return event.transaction.hash.concatI32(event.logIndex.toI32())
+}
+
+function loadGlobal(): GlobalStats {
   let g = GlobalStats.load(GLOBAL_ID)
-  if (g == null) {
+  if (g === null) {
     g = new GlobalStats(GLOBAL_ID)
     g.tradesQuantity = BigInt.zero()
     g.buysQuantity = BigInt.zero()
@@ -36,6 +49,7 @@ function getOrCreateGlobal(): GlobalStats {
     g.scaledCollateralVolume = BigDecimal.zero()
     g.collateralFees = BigInt.zero()
     g.scaledCollateralFees = BigDecimal.zero()
+    g.takerFillsQuantity = BigInt.zero()
     g.tradersCount = BigInt.zero()
     g.marketsCount = BigInt.zero()
     g.buildersCount = BigInt.zero()
@@ -43,30 +57,32 @@ function getOrCreateGlobal(): GlobalStats {
   return g as GlobalStats
 }
 
-function getOrCreateAccount(address: Address): Account {
-  let id = address.toHexString()
-  let a = Account.load(id)
-  if (a == null) {
-    a = new Account(id)
+function loadAccount(address: Address, g: GlobalStats): Account {
+  let a = Account.load(address)
+  if (a === null) {
+    a = new Account(address)
     a.tradesQuantity = BigInt.zero()
     a.buysQuantity = BigInt.zero()
     a.sellsQuantity = BigInt.zero()
     a.collateralVolume = BigInt.zero()
     a.scaledCollateralVolume = BigDecimal.zero()
+    a.collateralFees = BigInt.zero()
     a.lastTradedTimestamp = BigInt.zero()
-    let g = getOrCreateGlobal()
-    g.tradersCount = g.tradersCount.plus(BigInt.fromI32(1))
-    g.save()
+    g.tradersCount = g.tradersCount.plus(ONE)
   }
   return a as Account
 }
 
-function getOrCreateMarket(tokenId: BigInt): Market {
-  let id = tokenId.toString()
+function loadMarket(tokenId: BigInt, info: TokenInfo, g: GlobalStats): Market {
+  let id = marketId(tokenId)
   let m = Market.load(id)
-  if (m == null) {
+  if (m === null) {
     m = new Market(id)
     m.tokenId = tokenId
+    m.clobTokenId = tokenId.toString()
+    m.module = info.module
+    m.conditionId = info.conditionId
+    if (info.conditionId !== null) m.outcomeIndex = info.outcomeIndex
     m.tradesQuantity = BigInt.zero()
     m.buysQuantity = BigInt.zero()
     m.sellsQuantity = BigInt.zero()
@@ -76,40 +92,34 @@ function getOrCreateMarket(tokenId: BigInt): Market {
     m.scaledCollateralFees = BigDecimal.zero()
     m.lastPrice = BigDecimal.zero()
     m.lastActiveTimestamp = BigInt.zero()
-    let g = getOrCreateGlobal()
-    g.marketsCount = g.marketsCount.plus(BigInt.fromI32(1))
-    g.save()
+    m.lastActiveBlock = BigInt.zero()
+    g.marketsCount = g.marketsCount.plus(ONE)
   }
   return m as Market
 }
 
-function getOrCreateBuilder(code: Bytes, timestamp: BigInt): Builder | null {
-  if (code.equals(ZERO_BUILDER)) {
-    return null
+function loadScratch(exchange: Address, tx: Bytes): MatchScratch {
+  let s = MatchScratch.load(exchange)
+  if (s === null) {
+    s = new MatchScratch(exchange)
+    s.transactionHash = tx
+    resetScratch(s as MatchScratch, tx)
+  } else if (!s.transactionHash.equals(tx)) {
+    resetScratch(s as MatchScratch, tx)
   }
-  let id = code.toHexString()
-  let b = Builder.load(id)
-  if (b == null) {
-    b = new Builder(id)
-    b.orderCount = BigInt.zero()
-    b.volume = BigInt.zero()
-    b.scaledVolume = BigDecimal.zero()
-    b.fees = BigInt.zero()
-    b.scaledFees = BigDecimal.zero()
-    b.firstSeenTimestamp = timestamp
-    b.lastSeenTimestamp = timestamp
-    let g = getOrCreateGlobal()
-    g.buildersCount = g.buildersCount.plus(BigInt.fromI32(1))
-    g.save()
-  }
-  return b
+  return s as MatchScratch
 }
 
-function recordFill(
-  txHash: Bytes,
-  logIndex: BigInt,
-  timestamp: BigInt,
-  blockNumber: BigInt,
+function resetScratch(s: MatchScratch, tx: Bytes): void {
+  s.transactionHash = tx
+  s.buyCollateral = BigInt.zero()
+  s.sellCollateral = BigInt.zero()
+  s.buyTokens = BigInt.zero()
+  s.sellTokens = BigInt.zero()
+}
+
+export function recordFill(
+  event: ethereum.Event,
   orderHash: Bytes,
   maker: Address,
   taker: Address,
@@ -122,29 +132,38 @@ function recordFill(
   metadata: Bytes,
   exchange: string
 ): void {
-  let makerAccount = getOrCreateAccount(maker)
-  let takerAccount = getOrCreateAccount(taker)
-  let market = getOrCreateMarket(tokenId)
+  let timestamp = event.block.timestamp
+  let g = loadGlobal()
+  let info = decodeTokenId(tokenId)
+  let market = loadMarket(tokenId, info, g)
+  let owner = loadAccount(maker, g)
+  // The taker order's own OrderFilled names the exchange contract as taker.
+  let isTakerFill = taker.equals(event.address)
 
-  // BUY:  maker pays collateral, receives tokens. makerAmount = collateral, takerAmount = tokens.
-  // SELL: maker pays tokens, receives collateral. makerAmount = tokens, takerAmount = collateral.
-  let collateralAmount = side == SIDE_BUY ? makerAmountFilled : takerAmountFilled
-  let tokenAmount = side == SIDE_BUY ? takerAmountFilled : makerAmountFilled
-  let price = tokenAmount.equals(BigInt.zero())
+  // BUY:  order pays collateral, receives tokens. makerAmount = collateral, takerAmount = tokens.
+  // SELL: order pays tokens, receives collateral. makerAmount = tokens, takerAmount = collateral.
+  let isBuy = side == SIDE_BUY
+  let collateralAmount = isBuy ? makerAmountFilled : takerAmountFilled
+  let tokenAmount = isBuy ? takerAmountFilled : makerAmountFilled
+  let price = tokenAmount.isZero()
     ? BigDecimal.zero()
     : collateralAmount.toBigDecimal().div(tokenAmount.toBigDecimal())
 
-  let id = txHash.toHexString() + "-" + logIndex.toString()
-  let ev = new OrderFilledEvent(id)
-  ev.transactionHash = txHash
+  let ev = new OrderFilledEvent(eventId(event))
+  ev.transactionHash = event.transaction.hash
+  ev.logIndex = event.logIndex
   ev.timestamp = timestamp
-  ev.blockNumber = blockNumber
+  ev.blockNumber = event.block.number
   ev.orderHash = orderHash
-  ev.maker = makerAccount.id
-  ev.taker = takerAccount.id
+  ev.maker = owner.id
+  ev.taker = taker
+  ev.isTakerFill = isTakerFill
   ev.side = side
   ev.market = market.id
   ev.tokenId = tokenId
+  ev.module = info.module
+  ev.conditionId = info.conditionId
+  if (info.conditionId !== null) ev.outcomeIndex = info.outcomeIndex
   ev.makerAmountFilled = makerAmountFilled
   ev.takerAmountFilled = takerAmountFilled
   ev.collateralAmount = collateralAmount
@@ -155,40 +174,91 @@ function recordFill(
   ev.builder = builder
   ev.metadata = metadata
   ev.exchange = exchange
-  ev.save()
 
-  market.tradesQuantity = market.tradesQuantity.plus(BigInt.fromI32(1))
-  if (side == SIDE_BUY) {
-    market.buysQuantity = market.buysQuantity.plus(BigInt.fromI32(1))
-  } else {
-    market.sellsQuantity = market.sellsQuantity.plus(BigInt.fromI32(1))
-  }
-  market.collateralVolume = market.collateralVolume.plus(collateralAmount)
-  market.scaledCollateralVolume = scale(market.collateralVolume)
+  // Fees: every fill (maker fees on maker fills, taker fee on the taker fill).
   market.collateralFees = market.collateralFees.plus(fee)
   market.scaledCollateralFees = scale(market.collateralFees)
+  g.collateralFees = g.collateralFees.plus(fee)
+  g.scaledCollateralFees = scale(g.collateralFees)
   market.lastPrice = price
   market.lastActiveTimestamp = timestamp
+  market.lastActiveBlock = event.block.number
+
+  // Net collateral this fill adds to volume.
+  let scratch = loadScratch(event.address, event.transaction.hash)
+  let netCollateral = collateralAmount
+  let netTokens = tokenAmount
+  if (isTakerFill) {
+    // Complementary makers are on the opposite side of the taker; the taker fill mirrors them.
+    let compCol = isBuy ? scratch.sellCollateral : scratch.buyCollateral
+    let compTok = isBuy ? scratch.sellTokens : scratch.buyTokens
+    netCollateral = collateralAmount.gt(compCol) ? collateralAmount.minus(compCol) : BigInt.zero()
+    netTokens = tokenAmount.gt(compTok) ? tokenAmount.minus(compTok) : BigInt.zero()
+    resetScratch(scratch, event.transaction.hash)
+    g.takerFillsQuantity = g.takerFillsQuantity.plus(ONE)
+  } else if (isBuy) {
+    scratch.buyCollateral = scratch.buyCollateral.plus(collateralAmount)
+    scratch.buyTokens = scratch.buyTokens.plus(tokenAmount)
+  } else {
+    scratch.sellCollateral = scratch.sellCollateral.plus(collateralAmount)
+    scratch.sellTokens = scratch.sellTokens.plus(tokenAmount)
+  }
+  scratch.save()
+  ev.netCollateral = netCollateral
+  ev.save()
+
+  if (!isTakerFill || !netCollateral.isZero()) {
+    market.tradesQuantity = market.tradesQuantity.plus(ONE)
+    g.tradesQuantity = g.tradesQuantity.plus(ONE)
+    if (isBuy) {
+      market.buysQuantity = market.buysQuantity.plus(ONE)
+      g.buysQuantity = g.buysQuantity.plus(ONE)
+    } else {
+      market.sellsQuantity = market.sellsQuantity.plus(ONE)
+      g.sellsQuantity = g.sellsQuantity.plus(ONE)
+    }
+    market.collateralVolume = market.collateralVolume.plus(netCollateral)
+    market.scaledCollateralVolume = scale(market.collateralVolume)
+    g.collateralVolume = g.collateralVolume.plus(netCollateral)
+    g.scaledCollateralVolume = scale(g.collateralVolume)
+
+    if (tradeTimeseriesEnabled) {
+      let tr = new Trade(0)
+      tr.timestamp = timestamp.toI64() * 1000000
+      tr.market = market.id
+      tr.module = info.module
+      tr.exchange = exchange
+      tr.price = price
+      tr.collateral = scale(netCollateral)
+      tr.tokens = scale(netTokens)
+      tr.save()
+    }
+  }
   market.save()
 
-  let accounts: Account[] = [makerAccount, takerAccount]
-  for (let i = 0; i < accounts.length; i++) {
-    let acc = accounts[i]
-    acc.tradesQuantity = acc.tradesQuantity.plus(BigInt.fromI32(1))
-    if (side == SIDE_BUY) {
-      acc.buysQuantity = acc.buysQuantity.plus(BigInt.fromI32(1))
-    } else {
-      acc.sellsQuantity = acc.sellsQuantity.plus(BigInt.fromI32(1))
-    }
-    acc.collateralVolume = acc.collateralVolume.plus(collateralAmount)
-    acc.scaledCollateralVolume = scale(acc.collateralVolume)
-    acc.lastTradedTimestamp = timestamp
-    acc.save()
-  }
+  // Account = owner of the filled order (maker field). Taker is credited via its own taker fill.
+  owner.tradesQuantity = owner.tradesQuantity.plus(ONE)
+  if (isBuy) owner.buysQuantity = owner.buysQuantity.plus(ONE)
+  else owner.sellsQuantity = owner.sellsQuantity.plus(ONE)
+  owner.collateralVolume = owner.collateralVolume.plus(collateralAmount)
+  owner.scaledCollateralVolume = scale(owner.collateralVolume)
+  owner.collateralFees = owner.collateralFees.plus(fee)
+  owner.lastTradedTimestamp = timestamp
+  owner.save()
 
-  let b = getOrCreateBuilder(builder, timestamp)
-  if (b != null) {
-    b.orderCount = b.orderCount.plus(BigInt.fromI32(1))
+  if (!builder.equals(ZERO_BUILDER)) {
+    let b = Builder.load(builder)
+    if (b === null) {
+      b = new Builder(builder)
+      b.orderCount = BigInt.zero()
+      b.volume = BigInt.zero()
+      b.scaledVolume = BigDecimal.zero()
+      b.fees = BigInt.zero()
+      b.scaledFees = BigDecimal.zero()
+      b.firstSeenTimestamp = timestamp
+      g.buildersCount = g.buildersCount.plus(ONE)
+    }
+    b.orderCount = b.orderCount.plus(ONE)
     b.volume = b.volume.plus(collateralAmount)
     b.scaledVolume = scale(b.volume)
     b.fees = b.fees.plus(fee)
@@ -197,119 +267,23 @@ function recordFill(
     b.save()
   }
 
-  let g = getOrCreateGlobal()
-  g.tradesQuantity = g.tradesQuantity.plus(BigInt.fromI32(1))
-  if (side == SIDE_BUY) {
-    g.buysQuantity = g.buysQuantity.plus(BigInt.fromI32(1))
-  } else {
-    g.sellsQuantity = g.sellsQuantity.plus(BigInt.fromI32(1))
-  }
-  g.collateralVolume = g.collateralVolume.plus(collateralAmount)
-  g.scaledCollateralVolume = scale(g.collateralVolume)
-  g.collateralFees = g.collateralFees.plus(fee)
-  g.scaledCollateralFees = scale(g.collateralFees)
   g.save()
 }
 
 export function handleOrderFilled(event: CtfOrderFilledEvent): void {
-  recordFill(
-    event.transaction.hash,
-    event.logIndex,
-    event.block.timestamp,
-    event.block.number,
-    event.params.orderHash,
-    event.params.maker,
-    event.params.taker,
-    event.params.side,
-    event.params.tokenId,
-    event.params.makerAmountFilled,
-    event.params.takerAmountFilled,
-    event.params.fee,
-    event.params.builder,
-    event.params.metadata,
-    "CTF"
-  )
+  let p = event.params
+  recordFill(event, p.orderHash, p.maker, p.taker, p.side, p.tokenId, p.makerAmountFilled,
+    p.takerAmountFilled, p.fee, p.builder, p.metadata, EXCHANGE_CTF)
 }
 
 export function handleOrderFilledNegRisk(event: NegRiskOrderFilledEvent): void {
-  recordFill(
-    event.transaction.hash,
-    event.logIndex,
-    event.block.timestamp,
-    event.block.number,
-    event.params.orderHash,
-    event.params.maker,
-    event.params.taker,
-    event.params.side,
-    event.params.tokenId,
-    event.params.makerAmountFilled,
-    event.params.takerAmountFilled,
-    event.params.fee,
-    event.params.builder,
-    event.params.metadata,
-    "NEG_RISK"
-  )
+  let p = event.params
+  recordFill(event, p.orderHash, p.maker, p.taker, p.side, p.tokenId, p.makerAmountFilled,
+    p.takerAmountFilled, p.fee, p.builder, p.metadata, EXCHANGE_NEG_RISK)
 }
 
-function recordMatched(
-  txHash: Bytes,
-  logIndex: BigInt,
-  timestamp: BigInt,
-  blockNumber: BigInt,
-  takerOrderHash: Bytes,
-  takerOrderMaker: Address,
-  side: i32,
-  tokenId: BigInt,
-  makerAmountFilled: BigInt,
-  takerAmountFilled: BigInt,
-  exchange: string
-): void {
-  let account = getOrCreateAccount(takerOrderMaker)
-  let market = getOrCreateMarket(tokenId)
-  let id = txHash.toHexString() + "-" + logIndex.toString()
-  let ev = new OrdersMatchedEvent(id)
-  ev.transactionHash = txHash
-  ev.timestamp = timestamp
-  ev.blockNumber = blockNumber
-  ev.takerOrderHash = takerOrderHash
-  ev.takerOrderMaker = account.id
-  ev.side = side
-  ev.market = market.id
-  ev.tokenId = tokenId
-  ev.makerAmountFilled = makerAmountFilled
-  ev.takerAmountFilled = takerAmountFilled
-  ev.exchange = exchange
-  ev.save()
-}
-
-export function handleOrdersMatched(event: CtfOrdersMatchedEvent): void {
-  recordMatched(
-    event.transaction.hash,
-    event.logIndex,
-    event.block.timestamp,
-    event.block.number,
-    event.params.takerOrderHash,
-    event.params.takerOrderMaker,
-    event.params.side,
-    event.params.tokenId,
-    event.params.makerAmountFilled,
-    event.params.takerAmountFilled,
-    "CTF"
-  )
-}
-
-export function handleOrdersMatchedNegRisk(event: NegRiskOrdersMatchedEvent): void {
-  recordMatched(
-    event.transaction.hash,
-    event.logIndex,
-    event.block.timestamp,
-    event.block.number,
-    event.params.takerOrderHash,
-    event.params.takerOrderMaker,
-    event.params.side,
-    event.params.tokenId,
-    event.params.makerAmountFilled,
-    event.params.takerAmountFilled,
-    "NEG_RISK"
-  )
+export function handleOrderFilledMigratable(event: MigratableOrderFilledEvent): void {
+  let p = event.params
+  recordFill(event, p.orderHash, p.maker, p.taker, p.side, p.tokenId, p.makerAmountFilled,
+    p.takerAmountFilled, p.fee, p.builder, p.metadata, EXCHANGE_MIGRATABLE)
 }

@@ -1,9 +1,11 @@
-specVersion: 1.0.0
-description: Polymarket CLOB V2 orderbook — OrderFilled / OrdersMatched from CTF Exchange V2 and Neg Risk CTF Exchange V2
+specVersion: 1.3.0
+description: Polymarket V2 orderbook - OrderFilled from CTF Exchange V2, Neg Risk CTF Exchange V2 and the V2 PositionManager Exchange (MigratableExchange)
 repository: https://github.com/PaulieB14/polymarket-v2-subgraphs
 schema:
   file: ./schema.graphql
 indexerHints:
+  # Immutable fills/matches and the Trade timeseries keep full history regardless;
+  # only superseded versions of mutable rollups (Market/Account/Builder/GlobalStats) are pruned.
   prune: auto
 dataSources:
   - kind: ethereum
@@ -12,26 +14,25 @@ dataSources:
     source:
       address: "0xE111180000d2663C0091e4f400237545B87B996B"
       abi: CtfExchangeV2
-      startBlock: 84902353
+      startBlock: 85050371 # first OrderFilled (deployed 84902353)
     mapping:
       kind: ethereum/events
-      apiVersion: 0.0.7
+      apiVersion: 0.0.9
       language: wasm/assemblyscript
       entities:
         - OrderFilledEvent
-        - OrdersMatchedEvent
         - Market
         - Account
         - Builder
         - GlobalStats
+        - Trade
+        - MatchScratch
       abis:
         - name: CtfExchangeV2
           file: ./abis/CtfExchangeV2.json
       eventHandlers:
         - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
           handler: handleOrderFilled
-        - event: OrdersMatched(indexed bytes32,indexed address,uint8,uint256,uint256,uint256)
-          handler: handleOrdersMatched
       file: ./src/mapping.ts
   - kind: ethereum
     name: NegRiskCtfExchangeV2
@@ -39,24 +40,49 @@ dataSources:
     source:
       address: "0xe2222d279d744050d28e00520010520000310F59"
       abi: NegRiskCtfExchangeV2
-      startBlock: 84902353
+      startBlock: 85069592 # first OrderFilled (deployed 85058176)
     mapping:
       kind: ethereum/events
-      apiVersion: 0.0.7
+      apiVersion: 0.0.9
       language: wasm/assemblyscript
       entities:
         - OrderFilledEvent
-        - OrdersMatchedEvent
         - Market
         - Account
         - Builder
         - GlobalStats
+        - Trade
+        - MatchScratch
       abis:
         - name: NegRiskCtfExchangeV2
           file: ./abis/NegRiskCtfExchangeV2.json
       eventHandlers:
         - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
           handler: handleOrderFilledNegRisk
-        - event: OrdersMatched(indexed bytes32,indexed address,uint8,uint256,uint256,uint256)
-          handler: handleOrdersMatchedNegRisk
+      file: ./src/mapping.ts
+  - kind: ethereum
+    name: MigratableExchange
+    network: matic
+    source:
+      address: "0xe3333700ca9d93003f00f0f71f8515005f6c00aa"
+      abi: MigratableExchange
+      startBlock: 87620369 # first OrderFilled (proxy deployed 87479471); V2 PositionManager tokens incl. combinatorial
+    mapping:
+      kind: ethereum/events
+      apiVersion: 0.0.9
+      language: wasm/assemblyscript
+      entities:
+        - OrderFilledEvent
+        - Market
+        - Account
+        - Builder
+        - GlobalStats
+        - Trade
+        - MatchScratch
+      abis:
+        - name: MigratableExchange
+          file: ./abis/MigratableExchange.json
+      eventHandlers:
+        - event: OrderFilled(indexed bytes32,indexed address,indexed address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)
+          handler: handleOrderFilledMigratable
       file: ./src/mapping.ts
